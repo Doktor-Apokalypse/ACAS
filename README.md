@@ -1,462 +1,329 @@
-# Apokalypse Coder Bot
+# Apokalypse Code Analysis System
 
-A multi-language code analysis engine with a secure FastAPI WebUI and a local Ollama model
-for complex semantic review. The engine parses source, indexes dependencies, checks deterministic
-facts and manages resumable project analysis. It supports file/folder/ZIP uploads, persistent
-accounts and conversations, evidence-grounded findings, and owner/admin controls.
+A multi-language code analysis engine with a secure FastAPI WebUI and a local language model
+for semantic review. It parses source, indexes dependencies, checks deterministic facts, and
+manages resumable project analysis.
 
-## Requirements
+## Installation and first run
 
-- Python 3.10 or newer
-- [Ollama](https://ollama.com/) or Lemonade Server running locally or reachable over HTTP
-- A compatible local model with enough memory for the configured context size
-- SMTP access for normal account registration and password-reset emails
+These instructions use Ollama because it is available on Windows, Linux, and macOS and exposes
+the local API expected by ACAS. Lemonade Server can also be used; see **Using Lemonade Server**
+below.
 
-The application stores its data in SQLite and does not require a separate database server.
+### Common preparation
 
-## Local setup
+Before choosing the instructions for your operating system, prepare the following:
 
-Run these commands in PowerShell from the project directory:
+1. A computer with enough memory for the model. The recommended
+   [`deepseek-coder-v2:16b`](https://ollama.com/library/deepseek-coder-v2) download is about 8.9 GB,
+   and the model needs additional RAM or VRAM while analysing code.
+2. A working SMTP account that can send verification and password-reset messages. Obtain its SMTP
+   host, port, username, password or app password, sender address, and whether it uses STARTTLS
+   (commonly port 587) or SSL (commonly port 465).
+3. An owner username and owner email address. The first account registered with both exact values
+   becomes the protected owner/administrator. Owner usernames must be 3-30 characters and contain
+   only letters, numbers, `_`, or `-`.
+4. An owner password containing at least 15 characters.
 
-```powershell
-py -3.13 -m venv .venv313
-.\.venv313\Scripts\Activate.ps1
+Every command below containing a value beginning with `YOUR_` must be edited before it is run.
+Do not copy placeholder values unchanged. The examples make ACAS available only on the local
+computer and use `http://127.0.0.1:8000` in verification links.
+
+### Windows Command Prompt
+
+1. Install [Git for Windows](https://git-scm.com/download/win),
+   [Python](https://www.python.org/downloads/windows/), and
+   [Ollama for Windows](https://ollama.com/download/windows). Select **Add Python to PATH** during
+   Python installation, then restart Command Prompt.
+2. Check the installed commands:
+
+```batch
+git --version
+py --version
+ollama --version
+```
+
+3. Clone ACAS and enter its directory:
+
+```batch
+git clone https://github.com/Doktor-Apokalypse/ACAS.git
+cd ACAS
+```
+
+4. Create a Python environment and install the dependencies:
+
+```batch
+py -3 -m venv .venv
+.venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-ollama pull deepseek-coder-v2:16B
+```
+
+5. Download the default model:
+
+```batch
+ollama pull deepseek-coder-v2:16b
+```
+
+6. Replace every `YOUR_...` value, then configure this Command Prompt session:
+
+```batch
+set "OWNER_USERNAME=YOUR_OWNER_USERNAME"
+set "OWNER_EMAIL=YOUR_OWNER_EMAIL_ADDRESS"
+set "SMTP_HOST=YOUR_SMTP_HOST"
+set "SMTP_PORT=587"
+set "SMTP_USERNAME=YOUR_SMTP_USERNAME"
+set "SMTP_PASSWORD=YOUR_SMTP_PASSWORD_OR_APP_PASSWORD"
+set "SMTP_FROM=YOUR_SENDER_EMAIL_ADDRESS"
+set "PUBLIC_BASE_URL=http://127.0.0.1:8000"
+set "OLLAMA_MODEL=deepseek-coder-v2:16b"
+```
+
+7. Start ACAS and leave the window open:
+
+```batch
 python main.py
 ```
 
-The default local address is <http://127.0.0.1:8000>. Ollama is expected at
-<http://127.0.0.1:11434> unless `OLLAMA_URL` is changed.
-The WebUI header shows the configured Ollama model used for chat and analysis requests.
-Lemonade models whose names end in `-Hybrid` automatically use Lemonade's native
-`/v1/chat/completions` transport; other models continue to use `/api/chat`. Keep
-`OLLAMA_URL` set to the server base address, including when Lemonade uses port 11434.
+### Windows PowerShell
 
-`python main.py` also starts an ngrok tunnel when `NGROK_AUTHTOKEN` is present. Starting with
-`uvicorn main:app` does not create that tunnel.
-
-## Configuration
-
-[`.env.example`](.env.example) documents every supported setting. It is a reference template:
-the application reads process environment variables and does not automatically load `.env`.
-Set the values needed by the current PowerShell session before starting it, for example:
+1. Install [Git for Windows](https://git-scm.com/download/win),
+   [Python](https://www.python.org/downloads/windows/), and
+   [Ollama for Windows](https://ollama.com/download/windows). Select **Add Python to PATH** during
+   Python installation, then restart PowerShell.
+2. Check the installed commands:
 
 ```powershell
-$env:OWNER_USERNAME = "your_admin_name"
-$env:OWNER_EMAIL = "<owner-email>"
-$env:SMTP_HOST = "smtp.example.com"
+git --version
+py --version
+ollama --version
+```
+
+3. Clone ACAS and enter its directory:
+
+```powershell
+git clone https://github.com/Doktor-Apokalypse/ACAS.git
+Set-Location ACAS
+```
+
+4. Create a Python environment and install the dependencies:
+
+```powershell
+py -3 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+The execution-policy change applies only to this PowerShell process.
+
+5. Download the default model:
+
+```powershell
+ollama pull deepseek-coder-v2:16b
+```
+
+6. Replace every `YOUR_...` value, then configure this PowerShell session:
+
+```powershell
+$env:OWNER_USERNAME = "YOUR_OWNER_USERNAME"
+$env:OWNER_EMAIL = "YOUR_OWNER_EMAIL_ADDRESS"
+$env:SMTP_HOST = "YOUR_SMTP_HOST"
 $env:SMTP_PORT = "587"
-$env:SMTP_USERNAME = "<smtp-user>"
-$env:SMTP_PASSWORD = "use-a-secret-or-app-password"
-$env:SMTP_FROM = "<sender-address>"
-$env:PUBLIC_BASE_URL = "https://chat.example.com"
-$env:TRUSTED_HOSTS = "chat.example.com"
+$env:SMTP_USERNAME = "YOUR_SMTP_USERNAME"
+$env:SMTP_PASSWORD = "YOUR_SMTP_PASSWORD_OR_APP_PASSWORD"
+$env:SMTP_FROM = "YOUR_SENDER_EMAIL_ADDRESS"
+$env:PUBLIC_BASE_URL = "http://127.0.0.1:8000"
+$env:OLLAMA_MODEL = "deepseek-coder-v2:16b"
+```
+
+7. Start ACAS and leave the window open:
+
+```powershell
 python main.py
 ```
 
-Do not put real passwords, API tokens, or private hostnames in `.env.example` or source control.
-The local `.env` filename is ignored by Git.
+### Linux
+
+These package commands are for Ubuntu and Debian. On another distribution, install Git, Python
+3.10 or newer, pip, and Python venv support with the distribution package manager.
+
+1. Install Git and Python:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip
+```
+
+2. Install Ollama using its official Linux installer:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+3. Clone ACAS, create the Python environment, and install the dependencies:
+
+```bash
+git clone https://github.com/Doktor-Apokalypse/ACAS.git
+cd ACAS
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+4. Ensure Ollama is running, then download the model:
+
+```bash
+sudo systemctl start ollama
+ollama pull deepseek-coder-v2:16b
+```
+
+If the installer did not create a system service, run `ollama serve` in a second terminal and
+leave it open.
+
+5. Replace every `YOUR_...` value, then configure this terminal session:
+
+```bash
+export OWNER_USERNAME="YOUR_OWNER_USERNAME"
+export OWNER_EMAIL="YOUR_OWNER_EMAIL_ADDRESS"
+export SMTP_HOST="YOUR_SMTP_HOST"
+export SMTP_PORT="587"
+export SMTP_USERNAME="YOUR_SMTP_USERNAME"
+export SMTP_PASSWORD="YOUR_SMTP_PASSWORD_OR_APP_PASSWORD"
+export SMTP_FROM="YOUR_SENDER_EMAIL_ADDRESS"
+export PUBLIC_BASE_URL="http://127.0.0.1:8000"
+export OLLAMA_MODEL="deepseek-coder-v2:16b"
+```
+
+6. Start ACAS and leave the terminal open:
+
+```bash
+python main.py
+```
+
+### macOS
+
+Ollama requires macOS 14 Sonoma or newer. Apple silicon supports CPU and GPU inference; Intel Macs
+use CPU inference.
+
+1. Install [Python](https://www.python.org/downloads/macos/) and
+   [Ollama for macOS](https://ollama.com/download). Open Ollama once after installing it. Install
+   the Apple command-line tools, which provide Git:
+
+```bash
+xcode-select --install
+```
+
+2. Open a new Terminal window and check the installed commands:
+
+```bash
+git --version
+python3 --version
+ollama --version
+```
+
+3. Clone ACAS, create the Python environment, and install the dependencies:
+
+```bash
+git clone https://github.com/Doktor-Apokalypse/ACAS.git
+cd ACAS
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+4. Download the default model:
+
+```bash
+ollama pull deepseek-coder-v2:16b
+```
+
+5. Replace every `YOUR_...` value, then configure this Terminal session:
+
+```bash
+export OWNER_USERNAME="YOUR_OWNER_USERNAME"
+export OWNER_EMAIL="YOUR_OWNER_EMAIL_ADDRESS"
+export SMTP_HOST="YOUR_SMTP_HOST"
+export SMTP_PORT="587"
+export SMTP_USERNAME="YOUR_SMTP_USERNAME"
+export SMTP_PASSWORD="YOUR_SMTP_PASSWORD_OR_APP_PASSWORD"
+export SMTP_FROM="YOUR_SENDER_EMAIL_ADDRESS"
+export PUBLIC_BASE_URL="http://127.0.0.1:8000"
+export OLLAMA_MODEL="deepseek-coder-v2:16b"
+```
+
+6. Start ACAS and leave the terminal open:
+
+```bash
+python main.py
+```
+
+### SMTP variations
+
+The commands above assume STARTTLS on port 587, which matches the ACAS defaults. If the mail
+provider requires implicit SSL, also set `SMTP_USE_TLS=false`, set `SMTP_USE_SSL=true`, and use its
+SSL port. If authentication is not required, leave `SMTP_USERNAME` and `SMTP_PASSWORD` empty.
+ACAS requires `SMTP_HOST`, `SMTP_FROM`, and `PUBLIC_BASE_URL` before it can send account links.
+
+### First sign-in
+
+1. Keep Ollama and ACAS running.
+2. Open <http://127.0.0.1:8000>.
+3. Select **Register**.
+4. Register with the exact owner username and owner email configured above, and a password of at
+   least 15 characters.
+5. Open the verification message and follow its link on the same computer.
+6. Sign in. The matching account is created as the protected owner and administrator.
+7. Upload a small source file first and confirm that analysis completes before trying a large
+   project.
+
+Environment variables set by these examples last only for the current terminal session. Set them
+again before the next start, or configure them securely through the operating system or a service
+manager. The application does not automatically load `.env`; [`.env.example`](.env.example) is a
+reference list of all available settings.
+
+### Using Lemonade Server
+
+Install Lemonade Server and a compatible local model, then set `OLLAMA_URL` to its server address
+and `OLLAMA_MODEL` to the exact installed model name. Lemonade models whose names end in `-Hybrid`
+use `/v1/chat/completions`; other model names use `/api/chat`. Skip `ollama pull` when Lemonade
+manages the model.
+
+### Confirming the installation
+
+While ACAS is running:
+
+- Open <http://127.0.0.1:8000/health> to confirm the web application and database are available.
+- Open <http://127.0.0.1:8000/ready> to confirm the database, job worker, model server, and
+  configured model are ready.
+- The WebUI header shows the detected model.
+- Stop ACAS with **Ctrl+C** in its terminal.
 
 ### Project uploads
 
-The `+` button beside the chat composer offers **Select file(s)**, **Select project folder**, and
-**Select ZIP file**. Select one or more individual files to analyse them together as one project
-attachment. A single-file attachment uses its filename; multiple files use a shared project label.
-Individual selections use filenames only; use the folder picker to preserve directory structure.
-Duplicate filenames are rejected. Uploaded files are normalized, checked for traversal paths, duplicate names,
-links, special files, encryption, unsafe compression ratios, and configured size/count limits,
-then stored in SQLite without executing or extracting them onto the host filesystem. Common VCS,
-dependency-cache, virtual-environment, and build-output directories are skipped. Project data is
-owned by its chat, counts toward per-user storage, is included in account exports, and is removed
-when the project, chat, or account is deleted. The `PROJECT_UPLOAD_*` settings in `.env.example`
-control the upload limits.
+Use the `+` button in the WebUI to upload:
 
-Choose an existing project in **Upload to** to append files, folders or ZIP archives through the
-`+` menu. After creating a project, it becomes the selected upload target. Choose **New project**
-to keep the next upload separate. Uploads never silently replace an existing path; conflicts and
-the combined project's file/byte limits are checked before anything is committed.
+- **Individual files:** one source file or several files grouped as one project. Use the folder
+  option when directory structure matters.
+- **A project folder:** preserves its directories and files.
+- **A ZIP project:** accepts a normal, unencrypted `.zip` containing the project files.
 
-The expandable tree shows the project name, each upload's origin, and its files and directories. For
-folder uploads, the upload branch also represents the selected root directory instead of repeating
-the same directory as its first child.
-Right-click an entry, or use its **⋮** button, to delete a file, a folder and its descendants, or
-an entire upload. **Set as main file** marks a source file as the project's entry point and adds a
-Main badge; it does not rename the file. The choice is saved and supplied to the analysis engine.
-Deleting the selected main file clears the choice. An emptied project remains available for new
-uploads. Edits reset stored reports and rebuild dependency indexes; active analysis must be stopped
-before editing. The three-dot button beside the project name can rename or delete the whole project;
-deletion is refused while that project's analysis is active. Migration 32 adds the tree metadata
-while preserving existing uploaded contents.
-
-The WebUI is an analysis-only workspace titled **Apokalypse Code Analysis System**. It opens the
-most recent analysis workspace automatically without showing the chat-history sidebar or a request-
-mode switch. Pasted source submissions always use analysis mode.
-
-On desktop, the project tree occupies the left of the full-width workspace and the conversation or live
-analysis log occupies the right. Project status actions stay aligned to the right so the status and
-current function text can use the remaining width. During analysis (including queued and paused work), upload and
-message-entry controls disappear to expand these panels; the timer, pause/resume and stop remain
-available. Starting a project analysis selects that project and locks the project dropdown to it;
-the selector unlocks after completion, cancellation or failure so another project's tree and report
-can be viewed. Smaller screens stack the tree above the live log, with each panel scrolling independently.
-
-The selected main file appears green. Files and functions currently being analysed turn cyan, while
-failed functions appear red. A file appears red when all its processed functions failed and yellow
-when its completed results are a mixture of passed and failed. After every indexed function in a
-successful file has been processed, a tick appears and the filename returns to white (green for the
-main file). Paused files show a pause marker. Hover over a file for processed, failed and skipped counts:
-a tick indicates processing has finished, not that the file is defect-free.
-These states refresh with the live log and are restored after page reloads. Live progress updates
-preserve collapsed folders. Files without indexed functions do not receive a completion tick.
-Expand a source file to see its indexed functions. The active function turns cyan with its file and
-its branch opens automatically. Hover over a function to see its source declaration, completed description,
-and its return statements. Alternative returns are labelled **flow dependent** and include their source
-lines; exact text already present in the description is not repeated. Model-reviewed descriptions appear
-directly; functions completed by the local AST pass show a **Static analysis** description, and functions
-with neither result show **Unknown**. Click a function to open its statically resolved project callers,
-including each enclosing function or module-level location, call line, usage kind and exact call expression.
-A function without a completed model
-description retains a three-dot **Get description** action, which queues a forced semantic review for
-that function alone. Descriptions reuse the validated stored summary and are capped at 400 characters,
-so the model response contract does not need a duplicate field.
-The live status reports monotonic project results separately from the current file. Because analysis
-follows dependency order, the current symbol's source position can move backwards within a file; it is
-labelled **Source position** rather than presented as completed-work progress.
-
-Analysis reports distinguish model review, deterministic static analysis, fallback results and
-older results without quality metadata. Empty or generic model responses are rejected. Invalid
-individual findings retain validation diagnostics while valid contract information and static
-findings remain available; incomplete model reviews keep the project partial and are not cached.
-The **Review quality** panel separates completed-review coverage from model confidence. The 95%
-confidence target is shown against self-reported model scores, which are not calibrated accuracy
-probabilities. The engine does not raise scores to meet the target. Benchmark output also lists
-clean regions that have not been fully reviewed.
-
-Every upload also receives a deterministic file inventory without contacting Ollama. Extensions,
-special filenames, project manifests, shebangs, conservative content signatures, and project-wide
-context classify each file and select a primary project language. The inventory currently
-recognizes Python, Pascal, C#, C/C++, Rust, JavaScript/TypeScript, HTML, SQL, POSIX shell and
-PowerShell, along with common ancillary configuration, data, documentation, and stylesheet files.
-It records encoding, line count, confidence, detection method, binary/generated status, likely
-entry points, and whether a file is eligible for later structural analysis. Ambiguous `.h` and
-`.inc` files use the surrounding project's unambiguous files and manifests. Existing uploads are
-backfilled on startup after migration.
-
-Tree-sitter structural analysis currently supports Python, C/C++, C#, JavaScript, TypeScript,
-Rust, POSIX-style shell, PowerShell, HTML (including inline JavaScript), and SQL. Project analysis
-indexes functions and call sites before reviewing pending functions.
-Each target receives a source-derived dependency slice containing only its referenced imports,
-module declarations, and project symbol signatures, while results remain independently validated
-and persisted. Stored contracts describe parameters, return
-values, issues, and confidence; resolved internal calls are then checked conservatively against
-those contracts. The project chip's **Report** button shows the stored function results and call
-compatibility findings without returning uploaded source code to the browser. Ambiguous targets
-and values whose types cannot be proven are reported as unknown instead of being treated as
-errors. `FUNCTION_ANALYSIS_CHUNK_CHARS` now defaults to **20,000 characters**: a function at
-or below that size is reviewed whole. Functions larger than this threshold are split into contiguous,
-line-aware fragments and their validated results are merged without another model request.
-
-Before making model requests, a project pass now runs the existing local checks across its selected
-pending functions. Functions covered by the conservative local completion rules are saved immediately;
-remaining functions receive semantic review in dependency order. Parsing never executes uploaded code.
-The local path recognizes built-in exception constructors used directly by `raise`, allowing small,
-fully resolved validators to complete without an unnecessary model request. Arbitrary calls and
-user-defined exception constructors still require review. Complex functions still need a model:
-extracting their structure alone does not establish correct behavior.
-
-For Python and supported ordinary TypeScript function signatures, the engine owns syntax, parameter
-names/kinds/defaults, declared types, the stored summary, uncertainty and confidence. Python also
-supplies bounded return/raise occurrences and decorator facts. These facts are sent alongside the
-complete function and dependency context. Ollama returns a strict semantic JSON object containing only
-one source-anchored behavior claim, missing type inferences, return evidence, escaping exceptions, side
-effects and proof-bearing issues. Every claim includes 1-based source-relative lines and an exact source
-excerpt. After matching the excerpt inside the target, the engine converts those coordinates to absolute
-file lines for storage. It also accepts already-absolute coordinates when the excerpt proves them. If the
-model supplies an incorrect line but its exact excerpt occurs only once inside the target, the engine
-recovers the source line from that unique match and records the correction. A unique token sequence whose
-only difference is collapsed whitespace is restored to the exact multiline source before acceptance.
-Ambiguous excerpts remain rejected. The
-model cannot replace the target name, parsed signature, syntax verdict, summary or confidence. Declared types
-remain declarations rather than runtime guarantees; caught raises are not automatically reported as
-escaping exceptions. Other languages and unsupported signature shapes retain the existing full-review
-path. Compact reviews use individual requests even when batching is enabled for the full-review path.
-
-For unannotated Python functions, the local pass also resolves source-proven return relationships before
-asking Ollama. This includes returning a typed parameter, `self`/`cls`, literals and container expressions,
-unshadowed built-in constructors, conditional expressions whose branches are known, and boolean fallback
-expressions whose operands are known. It still requests inference for implicit fallthrough, generators,
-unknown calls and shadowed constructors. These rules reduce the model's work without executing uploads.
-
-The engine verifies each line range and excerpt against the supplied target before merging the response
-into the existing report/database format. Unsupported individual claims and issues are discarded locally
-and recorded in source-fact verification metadata. A missing behavior anchor spends one bounded model
-repair; if both model anchors fail, the engine selects and verifies one exact target-source statement for
-the description while retaining the rejected model claims in provenance. Missing contract inferences stay
-partial, with confidence capped at 0.8. A clean, completely
-grounded contract can receive engine confidence 0.97; model type inference or accepted semantic findings
-cap it at 0.95, rejected claims at 0.90, and truncated source observations at 0.90. Confidence therefore
-measures verified evidence coverage rather than model self-assessment. Malformed/truncated JSON,
-unavailable tool requests and a missing required behavior anchor enter the one-repair path. Backend failures
-and cancellation still stop promptly.
-Live project totals refresh after each persisted review and are included in queued and active job responses.
-Completed reviews survive restart; the new facts
-and cache versions prevent reuse of older response contracts for pending work.
-Common semantic response deviations are normalized before strict validation: an unsupported behavior
-kind is inferred from its exact evidence, and extra behavior claims are discarded after the first because
-the compact contract requests exactly one. The retained claim still has to pass source-line, evidence and
-behavior-kind verification.
-
-The compact schema is specialized for each function. If source facts already provide every parameter
-type, the model-facing grammar requires `parameter_inferences: []`. Return inference uses five flat
-fields: `return_has_value`, `return_types`, `return_nullable`, `return_line` and `return_evidence`. All five
-are forced to null/empty values when the engine already owns the return contract. The engine checks their
-coherence and source anchor, then constructs the nested stored return contract locally. Parameter names
-are restricted to unresolved names. Irrelevant or duplicate guesses are discarded where they cannot
-override engine facts; malformed required inference still fails or remains partial. Discarded wire fields
-and rejected claims are recorded in stored source-fact metadata for later review.
-
-`FUNCTION_ANALYSIS_CONTEXT_CHARS` defaults to **20,000 characters** in addition to the function
-source. The engine reserves space for completed callee contracts and a partial map of Python branch
-and exception paths, then includes referenced declarations and remaining source excerpts. Long
-contracts can omit descriptions while retaining structured types. Legacy and incomplete model
-reviews are not forwarded as completed-callee contracts; every inferred contract remains a hypothesis.
-
-Function analysis uses adaptive Ollama context by default. `OLLAMA_ANALYSIS_CONTEXT_MIN=8192`
-and `OLLAMA_ANALYSIS_CONTEXT_MAX=65536` bound the request tiers. The full assembled prompt,
-schema and response allowance are budgeted using a conservative UTF-8 byte estimate plus a
-2,048-token margin; this is not an exact tokenizer count. A project job retains its largest chosen
-tier until it finishes, avoiding repeated downward resizing. Separate jobs have independent context
-state. This does not guarantee a speedup: model loading and actual prompt length both matter.
-Requests whose estimate exceeds the ceiling fail explicitly without silently dropping source.
-
-Full function and chunk reviews select **4,096 / 8,192 / 16,384 output tokens** using structural
-heuristics by default (`FUNCTION_ANALYSIS_ADAPTIVE_OUTPUT=true`). Python AST and the installed
-language parsers measure branches, loops, nesting, exception handlers, parameters and return
-paths without executing source. Missing grammar support or incomplete fragments raise uncertainty.
-Distinct resolved/unresolved callees, cross-file dependencies and recursion determine a separate
-internal dependency score. Repeated calls count once; recognized unshadowed Python built-ins are
-excluded from unresolved calls. The WebUI displays the actual number of distinct resolved plus
-unresolved dependencies, while the weighted score remains available internally for budgeting.
-The complexity and internal dependency scores are bounded from 1 to 100.
-
-The initial formulas are `C = min(100, 1 + 3B + 5L + 6×max(0,N−1) + 4H + 2×max(0,R−1))`
-and `D = min(100, 1 + 3K + 8U + 2X + 15×recursive)`, where B/L/N/H/R are branches, loops,
-nesting depth, handlers and return/yield paths, and K/U/X count distinct resolved, unresolved and
-cross-file callees. An incomplete structural parse sets C to at least 50. A representative JSON
-structure using parameter names, plus allowances for descriptions and evidence, estimates J.
-It reserves space for potential findings without requiring the model to invent any.
-The initial budget is `ceil(1.25 × (J + 1024 + 32C + 16D + uncertainty_allowance))`;
-uncertainty adds 1,024 tokens when structural parsing is incomplete. The smallest fitting tier
-is selected; estimates beyond 16,384 are flagged, never presented as guaranteed fits.
-
-Compact semantic reviews use separate **1,024 / 2,048 / 4,096 output-token tiers** and estimate J from
-their evidence-only response structure. For explicitly named `qwen2.5-coder:*` models, their estimate is
-`ceil(1.25 * J)` with no separate thinking allowance; GPT-OSS retains its reasoning allowance. A matching
-truncation advances to the next compact tier when one is available. Compact-response usage history is
-separated from the old full-response history and versioned with the evidence response format, and Qwen's
-history does not depend on the GPT-OSS reasoning setting. During streaming, the engine checks the latest
-3,000 answer characters every 500 characters and interrupts two consecutive strong repetition detections.
-`FUNCTION_ANALYSIS_REQUEST_TIMEOUT` defaults to **300 seconds** and bounds the wall-clock duration of
-each function, chunk, or batch generation. A timed-out function is recorded as incomplete and the project
-continues; ordinary chat generation retains the independent idle socket timeout.
-
-Previous truncation of matching source raises its starting tier. Valid observed generation
-counts add a 15% margin at the 90th percentile; comparable cross-project observations only
-influence the estimate after eight samples. History is isolated by user, language, model tag,
-reasoning setting and estimator version. Calibration only raises an initial estimate. Batch
-counts are never attributed to individual functions. Up to 10,000 observations per user are
-retained, including total generated tokens and separate thinking/answer character counts;
-the latter are **not exact token counts**. Historical measurements begin with this version.
-Resetting analysis retains this history; deleting its project removes it.
-
-The active budget appears above the project tree, with per-file tooltips and per-function report
-API data. Scores and estimates are heuristics, not measured accuracy or guaranteed reasoning limits.
-Set `FUNCTION_ANALYSIS_ADAPTIVE_OUTPUT=false` to restore the fixed
-`FUNCTION_ANALYSIS_MAX_OUTPUT_TOKENS` allowance (default 8,192). Batches share at most
-`FUNCTION_ANALYSIS_BATCH_MAX_OUTPUT_TOKENS` (default 16,384), splitting before generation when
-combined estimates exceed this ceiling. An individual truncation retry can grow to 16,384 tokens.
-The context budget reserves this output space as well as the prompt and schema. These are
-maximum allowances, not required response lengths. More output space addresses truncation;
-missing fields and unsupported claims still require structured-output and source validation.
-
-While an Ollama response is streaming, the engine checks sufficiently long output for the same strong
-repetition signals used by final-response validation. Two consecutive detections close the response at
-about 7,000 answer characters and use the existing single transport retry. This prevents a token loop
-from consuming an entire 4,096/8,192/16,384-token allowance; normal short output is never checked, and a
-response still has to pass the final degeneracy test before it is accepted.
-
-For a fixed-window comparison, set process environment variables
-`OLLAMA_ADAPTIVE_ANALYSIS_CONTEXT=false` and `OLLAMA_CONTEXT_SIZE=65536`. Ordinary chat continues
-to use `OLLAMA_CONTEXT_SIZE` (default 32768). The engine logs `Ollama analysis budget` and
-`Ollama analysis timing` records with context size, actual token counts and load/prompt/generation
-times. Existing environment overrides take precedence over defaults; `.env.example` is a reference,
-not an automatically loaded file. Restart the application to apply changes. Reset the project's
-analysis before comparing complete runs on identical uploaded files; the cache version has changed.
-
-To use `qwen2.5-coder:14b-instruct-q5_K_M`, install that exact Ollama tag and set
-`OLLAMA_MODEL=qwen2.5-coder:14b-instruct-q5_K_M` in the PyCharm run configuration before restarting.
-Keep `FUNCTION_ANALYSIS_BATCH_SIZE=1` for the comparison. The engine omits the GPT-OSS `think`
-option for Qwen2.5-Coder. Resume preserves earlier completed GPT-OSS reviews; reset analysis or use a
-fresh project when you want a complete Qwen-only comparison. Model tags are distinct, including
-their quantization suffixes. These code changes do not download or switch the running model.
-
-`OLLAMA_GPT_OSS_REASONING` has no effect on Qwen2.5-Coder. Ollama's thinking controls currently list
-Qwen 3 and GPT-OSS among supported model families, while this Qwen2.5-Coder tag is a standard instruct
-model. Raising `low` to `medium` or `high` therefore cannot trade speed for better Qwen2.5 reasoning;
-the application deliberately sends no `think` field for it. Use a thinking-capable model family if an
-explicit reasoning trace is required, then benchmark its JSON adherence and throughput separately.
-
-The existing 65,536-token engine ceiling is not a declaration of a model's native context support.
-[Qwen's model card](https://huggingface.co/Qwen/Qwen2.5-Coder-14B-Instruct#processing-long-texts)
-specifies a 32,768-token default configuration and YaRN for longer contexts in supported frameworks.
-Verify the local backend's long-context configuration before treating 65,536 or 131,072 as supported;
-`OLLAMA_ANALYSIS_CONTEXT_MAX=32768` explicitly bounds analysis to the native size if needed. Requests
-that exceed the configured ceiling fail visibly rather than silently shortening the source. Source
-chunking and dependency-context caps remain at 20,000 characters with this change.
-
-`FUNCTION_ANALYSIS_BATCH_SIZE` and `FUNCTION_ANALYSIS_BATCH_MAX_CHARS` bound each model request;
-an invalid batch automatically falls back to isolated function requests. Completed contracts are
-cached per user, language, model, contract version, function source, and dependency context so
-unchanged functions can be reused safely without retaining stale callee or global declarations. The maintenance worker
-removes cache entries older than `FUNCTION_ANALYSIS_CACHE_RETENTION_DAYS` and enforces
-`FUNCTION_ANALYSIS_CACHE_MAX_ROWS_PER_USER` so reuse cannot cause unbounded database growth.
-
-Resolved callee excerpts are available across supported languages; Python also receives referenced
-module declarations. Callees are scheduled before callers. Recursive components retain stable
-ordering and receive source context without exchanging inferred contracts. Completed callee
-contracts are labelled as hypotheses for subsequent model review. Batching defers callers whose
-dependencies still need analysis. Cache versioning covers the proof rules, and dependency context
-includes fingerprints of referenced symbol bodies even when only a signature fits in the prompt.
-
-Large pasted-code reviews use the same language detection and Tree-sitter adapters as uploads,
-while retaining Python's richer AST facts. Unknown languages or failed grammars fall back to an
-explicitly limited lexical inventory. For multiple fenced blocks, evidence verification covers
-the largest block and states how many other blocks were excluded.
-
-New model findings must include an exact source excerpt, line, failure type, and concrete trigger.
-They must also include a concise reachable failure path, a guard check, exact excerpts of any
-relevant guards, and a defect/contract-risk assessment. Missing proof or fabricated guard excerpts
-are rejected. These fields remain in the stored analysis JSON; conditional risks use the Unsafe
-report lane. Exact source matching establishes provenance, not the truth of a model's reasoning.
-Parser and source-derived checks can reject contradictory claims before persistence. The report's
-default view contains actionable Error, Unsafe, and Warning findings; maintainability advisories
-are stored separately and remain collapsed unless explicitly requested.
-
-Finding one deterministic defect no longer skips semantic review of the remaining function.
-Invalid syntax can finish at the parser stage; simple Python contracts retain a fast path, while
-branches, I/O and unresolved helper calls receive model review. A narrow JavaScript/TypeScript
-rule detects literal-null property access in an unconditional return, excluding optional chains,
-guarded branches, handlers and nested functions. Other semantic rules remain language-specific;
-parser support does not imply complete semantic coverage.
-Ordinary TypeScript parameter names, required/default/optional status and declared types are
-extracted directly from the grammar and override model guesses. Unsupported signatures such as
-destructuring remain on the model path. These declared contracts also feed the existing call
-compatibility checks, allowing missing arguments to be detected without model-inferred types.
-
-### Analysis benchmarks
-
-`analysis_benchmark.py` scores a stored report against source anchors instead of fragile fixed line
-numbers. It reports true positives, false positives, missed defects, duplicates, advisories, clean
-region findings, and the unanchored rate under an explicit analyzer-version label. The supplied
-`analysis_benchmark_fixed.json` describes the three deliberate faults in the `Fixed` test project
-and treats `read_limited`'s one-byte boundary probe as a clean control.
-Evaluation opens the database read-only and includes per-language scores and recorded model,
-batch, deterministic and cache counts. Missing or ambiguous source anchors cannot match arbitrary
-lines, and advisories cannot satisfy an expected defect.
-Syntax expectations use the file-level parser diagnostics, including errors that prevent a
-function from being indexed; matching copies in function findings are counted only once.
-
-```powershell
-& .\.venv313\Scripts\python.exe analysis_benchmark.py evaluate chat_memory.db PROJECT_ID analysis_benchmark_fixed.json
-```
-
-Generate nine clean/mutated pairs across Python, JavaScript, TypeScript, C++, C#, Rust, shell and
-PowerShell, covering scope defects, null access, syntax diagnostics and call compatibility:
-
-```powershell
-& .\.venv313\Scripts\python.exe analysis_benchmark.py generate .analysis-benchmark
-```
-
-Upload and analyse the generated corpus, then evaluate its stored report against
-`.analysis-benchmark/benchmark_manifest.json`. Keep the same model and settings when comparing
-versions. Regression tests also exercise the corpus with a model stand-in contributing no findings;
-that measures engine coverage only and is not a live Ollama accuracy measurement.
+Function analysis supports Python, JavaScript, TypeScript, C, C++, C#, Rust, Pascal, PowerShell,
+shell scripts, SQL, and HTML. Related configuration, documentation, stylesheet, and data files may
+be included as project context. Common dependency, virtual-environment, version-control, cache, and
+build-output directories are skipped. Executables and uploaded source are stored but never run.
 
 ### Account ownership
 
-Set `OWNER_USERNAME` and `OWNER_EMAIL` before the matching account completes registration. Both
-values must match that registration; the account is then created as the protected owner/admin.
-Changing only one of these settings does not transfer ownership.
+Configure `OWNER_USERNAME` and `OWNER_EMAIL` before registering the first account. An account that
+registers with both exact values becomes the protected owner and administrator.
 
-Administrators can search the user directory by username or email, filter it by role and ban
-status, sort by identity or usage, and move through bounded result pages. The server performs all
-filtering and ordering before returning `ADMIN_USER_PAGE_SIZE` rows (50 by default), so the Admin
-WebUI does not need to load the entire account table.
-
-The same table shows account creation and last-login times, active session counts, temporary-ban
-reason and expiry, and account-specific login failures or lock expiry. Administrators can revoke
-every session, clear member login restrictions, issue a time-limited or permanent member ban, or
-queue a password-reset email without receiving the secret reset token. Those operations against
-another administrator require the owner, and the protected owner account cannot be changed. Each
-successful operation is written to the administrator audit trail.
-
-The owner can set tighter per-user storage, active-job, and pending-input limits. Per-user job and
-input limits cannot exceed the server-wide safeguards. The owner can also anonymize an account and
-its stored conversations or permanently delete it after typing the exact username; active jobs and
-the owner account are protected from either operation.
-
-The Admin WebUI also monitors every queued or processing model job, including its owner, chat,
-type, progress, elapsed time, and worker state. Administrators can cancel member jobs immediately
-while queued or cooperatively while processing. Only the owner can cancel administrator jobs;
-owner jobs are protected. Administrative cancellations include the job ID in the owner-only audit
-trail.
-
-All administrators can also view a read-only system-health dashboard. It shows application uptime,
-database availability and size, schema and record counts, Ollama/model readiness, job-worker and
-queue state, and periodic-backup scheduling. The dashboard omits service URLs, filesystem paths,
-mail settings, credentials, and tokens. Its successful background refreshes are excluded from the
-routine HTTP access log.
-
-The owner can create an on-demand backup from the same dashboard. Manual backups use SQLite's
-online backup API, must pass an integrity check before publication, share the configured bounded
-routine-backup retention, and never expose their server filesystem path or contents to the browser.
-Each successful manual backup is included in the administrator audit trail.
-
-The owner can also run retention maintenance on demand. This uses the same rules as automatic
-maintenance: it removes expired sessions and one-time authentication records, prunes stale
-throttles and audit entries beyond their configured retention, and clears aged duplicate job
-payloads only when canonical chat messages remain available. Active credentials, current
-throttles, canonical conversations, and active jobs are preserved. The resulting totals are
-reported in the WebUI and audit trail.
-
-The owner can run a SQLite integrity check from the health dashboard. The newest result and check
-time are stored and shown only to the owner; a failed check returns a safe error and is also handled
-by the configured error-notification path.
-
-The owner can persistently open or close new-account registration from the health dashboard.
-Closing registration blocks new verification-email requests and prevents outstanding verification
-links from creating accounts until registration is reopened; it does not affect login, password
-reset, existing sessions, or existing accounts. The public registration page clearly reports the
-closed state, and every actual setting change is audited.
-
-The owner can independently pause new AI work. While paused, new chat, analysis, and evidence-
-verification retry submissions receive a temporary-unavailable response before their input is
-stored. Existing queued and processing jobs are not cancelled, and account access, history,
-exports, administration, and password recovery continue normally. The persistent state is shown
-to all administrators, and actual pause/resume changes are audited.
-
-The owner can publish or clear a site announcement with an information, warning, or critical
-level and an optional expiry of up to 30 days. All administrators can see the current announcement,
-while signed-in users receive a dismissible banner that refreshes quietly in the background. The
-message is always inserted as plain text rather than HTML, expiries are enforced server-side, and
-publication and clearing are audited without exposing server details.
-
-The owner-only Pending registrations panel can search, page through, and revoke unused account
-verification requests without exposing token digests. The audit panel supports actor, target,
-request-ID, action, and date filtering with server-side pagination, plus a UTF-8 CSV export. CSV
-cells beginning with spreadsheet formula characters are escaped before download.
+The owner can manage users and administrators, registration, jobs, storage limits, announcements,
+backups, and the audit log. Administrators can manage permitted users and active jobs. The protected
+owner cannot be demoted, banned, anonymized, or deleted through the administration interface.
 
 ### Error push notifications
 
@@ -547,7 +414,7 @@ completed reply from the linked assistant message. Chat history content itself i
 this maintenance task.
 
 Opening a chat initially returns only the newest `CHAT_HISTORY_PAGE_SIZE` messages (20 by default).
-The browser offers a cursor-based “Load earlier messages” control, so long conversations do not
+The browser offers a cursor-based **Load earlier messages** control, so long conversations do not
 require one unbounded database query, JSON response, and DOM render. Progress history is queried
 only for assistant messages present in the requested page.
 

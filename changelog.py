@@ -35,6 +35,19 @@ class ChangelogEntry:
 
 MANUAL_CHANGELOG_ENTRIES: tuple[ChangelogEntry, ...] = (
     ChangelogEntry(
+        recorded_at_utc="2026-09-11 20:05:15 UTC",
+        area="Documentation",
+        action="Changed",
+        title="Reworked installation and usage guidance",
+        details=(
+            "Replace the Windows-only setup summary with common preparation and step-by-step Windows Command Prompt, Windows PowerShell, Linux and macOS instructions.",
+            "Document required SMTP and owner setup, first sign-in, Lemonade configuration and installation health checks for new users.",
+            "Reduce project upload documentation to supported file, folder and ZIP inputs and supported analysis languages.",
+            "Remove the analysis benchmark documentation and condense account ownership to its principal roles and controls.",
+        ),
+        source="README.md and changelog.py",
+    ),
+    ChangelogEntry(
         recorded_at_utc="2026-09-11 19:41:12 UTC",
         area="Privacy",
         action="Changed",

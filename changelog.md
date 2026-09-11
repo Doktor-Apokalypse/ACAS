@@ -9,6 +9,17 @@ reliably; curated application entries begin on 2026-08-24.
 
 Changes, replacements, and reversions are labelled explicitly.
 
+## Reworked installation and usage guidance
+
+**2026-09-11 20:05:15 UTC** · Documentation / **Changed**
+
+- Replace the Windows-only setup summary with common preparation and step-by-step Windows Command Prompt, Windows PowerShell, Linux and macOS instructions.
+- Document required SMTP and owner setup, first sign-in, Lemonade configuration and installation health checks for new users.
+- Reduce project upload documentation to supported file, folder and ZIP inputs and supported analysis languages.
+- Remove the analysis benchmark documentation and condense account ownership to its principal roles and controls.
+
+**Source:** README.md and changelog.py
+
 ## Removed machine-specific and personal defaults
 
 **2026-09-11 19:41:12 UTC** · Privacy / **Changed**
