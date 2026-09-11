@@ -277,7 +277,7 @@ class NtfyErrorHandler(logging.Handler):
                     self.recent_records[fingerprint] = now
             priority = "urgent" if record.levelno >= logging.CRITICAL else "high"
             notification = (
-                f"Apokalypse Coder Bot {record.levelname}",
+                f"Apokalypse Code Analysis System {record.levelname}",
                 bounded_ntfy_message(self.format(record)),
                 priority,
             )

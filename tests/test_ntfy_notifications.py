@@ -37,7 +37,7 @@ class NtfyErrorHandlerTests(unittest.TestCase):
         self.logger.error("database unavailable")
         title, message, priority = self.notifications.get_nowait()
 
-        self.assertEqual(title, "Apokalypse Coder Bot ERROR")
+        self.assertEqual(title, "Apokalypse Code Analysis System ERROR")
         self.assertIn("database unavailable", message)
         self.assertEqual(priority, "high")
         self.assertTrue(self.notifications.empty())
@@ -46,7 +46,7 @@ class NtfyErrorHandlerTests(unittest.TestCase):
         self.logger.critical("failure %s", "☃" * 4_000)
         title, message, priority = self.notifications.get_nowait()
 
-        self.assertEqual(title, "Apokalypse Coder Bot CRITICAL")
+        self.assertEqual(title, "Apokalypse Code Analysis System CRITICAL")
         self.assertEqual(priority, "urgent")
         self.assertLessEqual(len(message.encode("utf-8")), main.NTFY_MESSAGE_MAX_BYTES)
         self.assertIn("notification shortened", message)

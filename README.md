@@ -1,8 +1,8 @@
 # Apokalypse Code Analysis System
 
-A multi-language code analysis engine with a secure FastAPI WebUI and a local language model
-for semantic review. It parses source, indexes dependencies, checks deterministic facts, and
-manages resumable project analysis.
+The Apokalypse Code Analysis System is a multi-language analysis engine with a secure FastAPI
+WebUI and a local language model for semantic review. It parses source, indexes dependencies,
+checks deterministic facts, and manages resumable project analysis.
 
 ## Installation and first run
 

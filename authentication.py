@@ -26,7 +26,7 @@ BLOCKLISTED_PASSWORDS = frozenset(
         "aaaaaaaaaaaaaaa",
         "adminadminadmin",
         "administrator123",
-        "apokalypsecoderbot",
+        "apokalypsecodeanalysissystem",
         "changemechangeme",
         "changemepassword",
         "codingai12345678",

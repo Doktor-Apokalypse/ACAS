@@ -42,7 +42,7 @@ class ChangelogTests(DatabaseTestCase):
             encoding="utf-8"
         )
         self.assertEqual(actual, expected)
-        self.assertTrue(actual.startswith("# Apokalypse Coder Bot — Changelog\n\n"))
+        self.assertTrue(actual.startswith("# Apokalypse Code Analysis System — Changelog\n\n"))
         self.assertEqual(actual.count("\n## "), len(entries))
 
     def test_database_entries_include_current_installation_status(self) -> None:
@@ -81,7 +81,7 @@ class ChangelogTests(DatabaseTestCase):
             self.authenticated_request(user_id, path="/api/changelog.md")
         )
         text = download.body.decode("utf-8")
-        self.assertIn("# Apokalypse Coder Bot — Changelog", text)
+        self.assertIn("# Apokalypse Code Analysis System — Changelog", text)
         self.assertIn("Installed on this database:", text)
         self.assertEqual(
             download.headers["content-disposition"],

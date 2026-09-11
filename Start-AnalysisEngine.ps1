@@ -18,7 +18,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-AnalysisEngine.p
 #>
 [CmdletBinding()]
 param(
-    [string]$ProjectDirectory = $PSScriptRoot,
+    [string]$ProjectDirectory = '',
     [switch]$CheckOnly
 )
 
@@ -26,6 +26,10 @@ $ErrorActionPreference = 'Stop'
 $launcherExitCode = 0
 $launcherLocationPushed = $false
 $launcherPreviousEnvironment = @{}
+
+if ([string]::IsNullOrWhiteSpace($ProjectDirectory)) {
+    $ProjectDirectory = $PSScriptRoot
+}
 
 try {
     if (-not (Test-Path -LiteralPath $ProjectDirectory -PathType Container)) {
@@ -75,7 +79,7 @@ try {
     Push-Location -LiteralPath $launcherProject
     $launcherLocationPushed = $true
     Write-Host ''
-    Write-Host 'Apokalypse code analysis engine' -ForegroundColor Cyan
+    Write-Host 'Apokalypse Code Analysis System' -ForegroundColor Cyan
     Write-Host "Project: $launcherProject"
     Write-Host "Python:  $launcherPython"
     foreach ($launcherSetting in $launcherDefaults.Keys) {

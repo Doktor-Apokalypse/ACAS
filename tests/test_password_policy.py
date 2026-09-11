@@ -27,7 +27,7 @@ class PasswordPolicyTests(unittest.TestCase):
         for password in (
             "passwordpassword",
             " Password1234567 ",
-            "apokalypsecoderbot",
+            "apokalypsecodeanalysissystem",
             "correcthorsebatterystaple",
         ):
             with self.subTest(password=password):

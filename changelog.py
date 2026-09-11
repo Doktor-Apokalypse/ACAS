@@ -807,7 +807,7 @@ def render_changelog_markdown(
     include_installation: bool = False,
 ) -> str:
     lines = [
-        "# Apokalypse Coder Bot — Changelog",
+        "# Apokalypse Code Analysis System — Changelog",
         "",
         "Newest entries appear first. All timestamps are UTC.",
         "",

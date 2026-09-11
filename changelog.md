@@ -1,4 +1,4 @@
-# Apokalypse Coder Bot — Changelog
+# Apokalypse Code Analysis System — Changelog
 
 Newest entries appear first. All timestamps are UTC.
 
