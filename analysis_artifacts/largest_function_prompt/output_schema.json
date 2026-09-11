@@ -1,0 +1,340 @@
+{
+  "$defs": {
+    "BehaviorClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "branch",
+            "call",
+            "control_flow",
+            "return",
+            "state_change",
+            "transformation",
+            "validation"
+          ],
+          "type": "string"
+        },
+        "start_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "evidence": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "start_line",
+        "end_line",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "EscapingErrorClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "error_type": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "start_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "evidence": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_type",
+        "start_line",
+        "end_line",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "FunctionIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "unsafe"
+          ],
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "syntax",
+            "type",
+            "logic",
+            "runtime",
+            "resource",
+            "security",
+            "maintainability"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "start_line": {
+          "description": "Absolute file line containing the exact evidence.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proof": {
+          "const": "source-v1",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Exact source excerpt, copied without a line-number prefix.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "failure_type": {
+          "description": "Concrete exception or incorrect behavior caused by this code.",
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "trigger": {
+          "description": "Concrete input or reachable state that triggers the failure.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "provenance": {
+          "const": "model",
+          "type": "string"
+        },
+        "reachability": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 1000
+        },
+        "guard_check": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 1000
+        },
+        "guard_evidence": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "assessment": {
+          "enum": [
+            "defect",
+            "contract_risk"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "category",
+        "title",
+        "description",
+        "start_line",
+        "end_line",
+        "proof",
+        "evidence",
+        "failure_type",
+        "trigger",
+        "provenance",
+        "reachability",
+        "guard_check",
+        "guard_evidence",
+        "assessment"
+      ],
+      "type": "object"
+    },
+    "ParameterInference": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        "accepted_types": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "type": "array"
+        },
+        "start_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "evidence": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "accepted_types",
+        "start_line",
+        "end_line",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "SideEffectClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "callback",
+            "database",
+            "filesystem",
+            "logging",
+            "mutation",
+            "network",
+            "process"
+          ],
+          "type": "string"
+        },
+        "start_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "evidence": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "start_line",
+        "end_line",
+        "evidence"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "behavior_claims": {
+      "items": {
+        "$ref": "#/$defs/BehaviorClaim"
+      },
+      "maxItems": 1,
+      "minItems": 1,
+      "type": "array"
+    },
+    "parameter_inferences": {
+      "items": {
+        "$ref": "#/$defs/ParameterInference"
+      },
+      "maxItems": 0,
+      "type": "array"
+    },
+    "return_has_value": {
+      "type": "null"
+    },
+    "return_types": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 0,
+      "type": "array"
+    },
+    "return_nullable": {
+      "type": "null"
+    },
+    "return_line": {
+      "type": "null"
+    },
+    "return_evidence": {
+      "type": "null"
+    },
+    "escaping_errors": {
+      "items": {
+        "$ref": "#/$defs/EscapingErrorClaim"
+      },
+      "maxItems": 6,
+      "type": "array"
+    },
+    "side_effects": {
+      "items": {
+        "$ref": "#/$defs/SideEffectClaim"
+      },
+      "maxItems": 6,
+      "type": "array"
+    },
+    "issues": {
+      "items": {
+        "$ref": "#/$defs/FunctionIssue"
+      },
+      "maxItems": 10,
+      "type": "array"
+    }
+  },
+  "required": [
+    "behavior_claims",
+    "parameter_inferences",
+    "return_has_value",
+    "return_types",
+    "return_nullable",
+    "return_line",
+    "return_evidence",
+    "escaping_errors",
+    "side_effects",
+    "issues"
+  ],
+  "type": "object"
+}

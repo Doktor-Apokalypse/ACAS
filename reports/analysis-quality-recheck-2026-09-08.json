@@ -1,0 +1,122 @@
+{
+  "project_id": "b891f01b-9a7a-4d6a-8193-a9d9b4a6d769",
+  "quick_check": "ok",
+  "foreign_key_violations": 0,
+  "statuses": [
+    {
+      "analysis_status": "completed",
+      "count": 490
+    },
+    {
+      "analysis_status": "failed",
+      "count": 4
+    }
+  ],
+  "quality": {
+    "total_count": 494,
+    "complete_count": 21,
+    "incomplete_count": 473,
+    "review_coverage": 0.04251012145748988,
+    "methods": {
+      "legacy": 469,
+      "model": 23,
+      "fallback": 2
+    },
+    "model_confidence_at_least_95_count": 10,
+    "confidence_target": 0.95,
+    "calibrated_confidence": null,
+    "confidence_explanation": "Model confidence is a self-reported estimate, not measured accuracy. Review coverage measures completed reviews, not correctness."
+  },
+  "benchmark": {
+    "analyzer_version": "1.0+cache-v8-meaningful-review-quality",
+    "total_finding_count": 4,
+    "expected_count": 3,
+    "true_positive_count": 3,
+    "false_positive_count": 0,
+    "missed_count": 0,
+    "duplicate_count": 0,
+    "advisory_count": 1,
+    "unanchored_count": 0,
+    "unanchored_rate": 0.0,
+    "clean_region_finding_count": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "matched_expectation_ids": [
+      "undefined-fact-name",
+      "undefined-uploads-name",
+      "folder-name-index"
+    ],
+    "missed_expectation_ids": [],
+    "false_positive_finding_ids": [],
+    "duplicate_finding_ids": [],
+    "clean_region_finding_ids": []
+  },
+  "benchmark_details": {
+    "by_language": {
+      "python": {
+        "analyzer_version": "1.0+cache-v8-meaningful-review-quality",
+        "total_finding_count": 4,
+        "expected_count": 3,
+        "true_positive_count": 3,
+        "false_positive_count": 0,
+        "missed_count": 0,
+        "duplicate_count": 0,
+        "advisory_count": 1,
+        "unanchored_count": 0,
+        "unanchored_rate": 0.0,
+        "clean_region_finding_count": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "matched_expectation_ids": [
+          "undefined-fact-name",
+          "undefined-uploads-name",
+          "folder-name-index"
+        ],
+        "missed_expectation_ids": [],
+        "false_positive_finding_ids": [],
+        "duplicate_finding_ids": [],
+        "clean_region_finding_ids": []
+      }
+    },
+    "execution": {
+      "function_analysis_model_request_count": 669,
+      "function_analysis_batch_request_count": 10,
+      "function_analysis_deterministic_count": 10,
+      "function_analysis_cache_hit_count": 0
+    },
+    "review_quality": {
+      "total_count": 494,
+      "complete_count": 21,
+      "incomplete_count": 473,
+      "review_coverage": 0.04251012145748988,
+      "methods": {
+        "legacy": 469,
+        "model": 23,
+        "fallback": 2
+      },
+      "model_confidence_at_least_95_count": 10,
+      "confidence_target": 0.95,
+      "calibrated_confidence": null,
+      "confidence_explanation": "Model confidence is a self-reported estimate, not measured accuracy. Review coverage measures completed reviews, not correctness."
+    },
+    "incomplete_clean_region_ids": [],
+    "clean_regions_fully_reviewed": true
+  },
+  "calls": [
+    {
+      "status": "compatible",
+      "scope_status": "in_scope",
+      "count": 538
+    },
+    {
+      "status": "unknown",
+      "scope_status": "in_scope",
+      "count": 602
+    },
+    {
+      "status": "unknown",
+      "scope_status": "out_of_scope",
+      "count": 4689
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "snapshot_note": "dependency_context is generated from database state and can change before this dependency-ordered function is reached",
+  "project_id": "cf7a4dd2-a6fa-460c-95e2-396f15944413",
+  "project_name": "Build 1391",
+  "symbol_id": 22667,
+  "file": "Fixed/project_function_analysis.py",
+  "symbol": "analyze_project_functions",
+  "start_line": 2795,
+  "end_line": 3088,
+  "line_count_inclusive": 294,
+  "source_characters": 12925,
+  "source_utf8_bytes": 12926,
+  "source_sha256": "8741c05d1b5d8b55c783b1576d12f145033ef6f44f27f381d6a54b282781e205",
+  "chunk_threshold_characters": 20000,
+  "request_count_for_function": 1,
+  "cyclic_dependency_member": false,
+  "include_inferred_dependency_context": true,
+  "dependency_context_characters_at_snapshot": 11609,
+  "engine_facts_json_characters": 2853,
+  "user_prompt_characters": 29659,
+  "effective_system_prompt_characters": 6467,
+  "output_schema_json_characters": 4057,
+  "estimated_input_tokens": 40312,
+  "budget": {
+    "version": "structural-output-v1",
+    "complexity_score": 100,
+    "dependency_score": 100,
+    "estimated_json_tokens": 1924,
+    "estimated_reasoning_tokens": 5824,
+    "estimated_total_tokens": 9685,
+    "output_tokens": 4096,
+    "ceiling_exceeded": true,
+    "history_samples": 1,
+    "reasons": [
+      "structural estimate"
+    ],
+    "uncertainty": [
+      "Some callees have no resolved source contract"
+    ],
+    "features": {
+      "branches": 34,
+      "loops": 9,
+      "nesting": 6,
+      "handlers": 4,
+      "returns": 4,
+      "parameters": [
+        "connection_factory",
+        "project_id",
+        "analysis_request",
+        "batch_analysis_request",
+        "chunk_analysis_request",
+        "cancel_check",
+        "pause_wait",
+        "progress_callback",
+        "retry_failed",
+        "limit"
+      ],
+      "known_builtins": [
+        "enumerate",
+        "int",
+        "len",
+        "list",
+        "max",
+        "min",
+        "set",
+        "str",
+        "type"
+      ],
+      "uncertainty": [],
+      "source_characters": 12925,
+      "semantic_review": true,
+      "dedicated_reasoning": true
+    },
+    "dependencies": {
+      "resolved": 16,
+      "unresolved": 15,
+      "cross_file": 1,
+      "recursive": false
+    },
+    "source_hash": "8741c05d1b5d8b55c783b1576d12f145033ef6f44f27f381d6a54b282781e205",
+    "model": "gpt-oss:20b:reasoning=low:semantic-v4",
+    "symbol_name": "analyze_project_functions"
+  },
+  "request": {
+    "model": "gpt-oss:20b",
+    "stream": true,
+    "think": "low",
+    "options": {
+      "num_ctx": 65536,
+      "num_predict": 4096,
+      "temperature": 0,
+      "top_k": 40,
+      "top_p": 0.9,
+      "repeat_last_n": 512,
+      "repeat_penalty": 1.0
+    },
+    "format": "See output_schema.json (the actual request embeds that same object)",
+    "messages": [
+      {
+        "role": "system",
+        "content": "See effective_system_prompt.txt"
+      },
+      {
+        "role": "user",
+        "content": "See analysis_prompt.txt"
+      }
+    ]
+  }
+}

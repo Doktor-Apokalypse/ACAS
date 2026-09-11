@@ -1,0 +1,137 @@
+# Selected project entry point: "Fixed/main.py"
+
+# Resolved source {"path": "Fixed/analysis_engine.py", "symbol": "AnalysisCancelled", "symbol_sha256": "f6aeaa96f16b7b2f23226081b948e7188d4b758456ed5013cded5c3e7dfd1452", "excerpt": "class AnalysisCancelled(Exception):\n    \"\"\"Raised when a user cancels an active LLM job.\"\"\"", "complete_symbol": true}
+
+# Resolved source {"path": "Fixed/project_function_analysis.py", "symbol": "_is_malformed_model_json_error", "symbol_sha256": "3075db6a4e444893e0208acd74e229bd39604cef2450931aaf4902408dffc22a", "excerpt": "def _is_malformed_model_json_error(exc: BaseException) -> bool:\n    text = f\"{type(exc).__name__}: {exc}\".casefold()\n    return (\n        _exception_chain_contains(exc, json.JSONDecodeError)\n        or \"function analysis response\" in text\n        or \"malformed json\" in text\n        or \"valid json\" in text\n        or \"jsondecodeerror\" in text\n    )", "complete_symbol": true}
+
+# Resolved source {"path": "Fixed/project_function_analysis.py", "symbol": "deterministic_python_analysis", "symbol_sha256": "69473b4fc35cc6b72fa79baaecbe6eb2ee29f7423357810edc276a9d21dd4e7d", "excerpt": "def deterministic_python_analysis(task: FunctionAnalysisTask) -> analysis_engine.FunctionAnalysisResult:\n    return deterministic_python_contract(task, _deterministic_seed_result())", "complete_symbol": true}
+
+# Resolved source {"path": "Fixed/project_function_analysis.py", "symbol": "deterministic_analysis_is_sufficient", "symbol_sha256": "015faf65701d552be154aed46754c2c9557d2eb922359dbc926168f84bee0563", "excerpt": "def deterministic_analysis_is_sufficient(\n    result: analysis_engine.FunctionAnalysisResult,\n) -> bool:\n    \"\"\"Skip the LLM when source-derived analysis already found concrete issues.\"\"\"\n    return any(\n        issue.provenance == \"deterministic\" and issue.severity in {\"error\", \"warning\"}\n        for issue in result.issues\n    )", "complete_symbol": true}
+
+# Resolved source {"path": "Fixed/project_function_analysis.py", "symbol": "load_cached_function_analysis", "symbol_sha256": "0610f8f51ff91f8d45c908f266c460daae211c745edfc36b4c89dbc75dfdee23", "excerpt": "def load_cached_function_analysis(\n    db: sqlite3.Connection,\n    task: FunctionAnalysisTask,\n) -> analysis_engine.FunctionAnalysisResult | None:\n    \"\"\"Return a validated cached result, rebased to this function's file lines.\"\"\"\n    exact_sha = task.cache_function_sha256 or task.function_sha256\n    semantic_sha = (\n        task.semantic_cache_function_sha256\n        or task.semantic_function_sha256\n        or exact_sha\n    )\n    if semantic_sha != exact_sha:\n        cached = _load_cached_function_analysis_for_sha(\n            db,\n            task,\n            semantic_sha,\n            allow_line_anchored_issues=False,\n        )\n        if cached is not None:\n            return cached\n    return _load_cached_function_analysis_for_sha(\n        db,\n        task,\n        exact_sha,\n        allow_line_anchored_issues=True,\n    )", "complete_symbol": true}
+
+# Resolved source {"path": "Fixed/project_function_analysis.py", "symbol": "mark_symbol_analysis", "symbol_sha256": "4a48a139c764dc89a6fc798da928c1a4ca133890f6d4fe821cd45eac4f14e649", "excerpt": "def mark_symbol_analysis(\n    db: sqlite3.Connection,\n    symbol_id: int,\n    status: str,\n    error: str | None,\n    *,\n    increment_attempt: bool,\n) -> None:\n    db.execute(\n        \"\"\"\n        UPDATE project_symbols\n        SET analysis_status = ?,\n            analysis_attempt_count = analysis_attempt_count + ?,\n            analysis_error = ?, analyzed_at = CURRENT_TIMESTAMP\n        WHERE id = ?\n        \"\"\",\n        (status, int(increment_attempt), error, symbol_id),\n    )", "complete_symbol": true}
+
+# Partial source control-flow map; relative_line counts from the function's first line as 1. Omitted statements and paths remain unreviewed by this map.
+
+# Source control-flow fact {"relative_line":14,"kind":"statement","enclosing_blocks":[],"source":"\"\"\"Analyse pending symbols sequentially, committing each result for safe resumption.\"\"\""}
+
+# Source control-flow fact {"relative_line":15,"kind":"statement","enclosing_blocks":[],"source":"request = analysis_request or analysis_engine.request_function_analysis"}
+
+# Source control-flow fact {"relative_line":16,"kind":"statement","enclosing_blocks":[],"source":"batch_request = (\n        batch_analysis_request or analysis_engine.request_function_analysis_batch\n    )"}
+
+# Source control-flow fact {"relative_line":19,"kind":"statement","enclosing_blocks":[],"source":"chunk_request = chunk_analysis_request or (\n        analysis_request or analysis_engine.request_function_chunk_analysis\n    )"}
+
+# Source control-flow fact {"relative_line":22,"kind":"statement","enclosing_blocks":[],"source":"chunk_chars = min(\n        FUNCTION_ANALYSIS_CHUNK_CHARS,\n        FUNCTION_ANALYSIS_MAX_SOURCE_CHARS,\n    )"}
+
+# Source control-flow fact {"relative_line":26,"kind":"statement","enclosing_blocks":[],"source":"statuses = [\"pending\", \"processing\"]"}
+
+# Source control-flow fact {"relative_line":28,"kind":"statement","enclosing_blocks":["if retry_failed"],"source":"statuses.extend((\"failed\", \"stale\", \"skipped\"))"}
+
+# Source control-flow fact {"relative_line":30,"kind":"statement","enclosing_blocks":["with connection_factory()"],"source":"db.execute(\n            \"UPDATE projects SET function_analysis_cache_hit_count = 0 WHERE id = ?\",\n            (project_id,),\n        )"}
+
+# Source control-flow fact {"relative_line":34,"kind":"statement","enclosing_blocks":["with connection_factory()"],"source":"all_symbols = db.execute(\n            \"\"\"\n            SELECT symbol.id, symbol.analysis_status, symbol.file_id,\n                   symbol.qualified_name, file.path\n            FROM project_symbols AS symbol\n            JOIN project_files AS file ON file.id = symbol.file_id\n            WHERE symbol.project_id = ?\n      "}
+
+# Source control-flow fact {"relative_line":46,"kind":"statement","enclosing_blocks":["with connection_factory()"],"source":"symbol_ids = [\n            int(row[\"id\"])\n            for row in all_symbols\n            if str(row[\"analysis_status\"]) in statuses\n        ]"}
+
+# Source control-flow fact {"relative_line":51,"kind":"statement","enclosing_blocks":["with connection_factory()"],"source":"refresh_project_function_analysis(db, project_id, forced_status=\"running\")"}
+
+# Source control-flow fact {"relative_line":52,"kind":"statement","enclosing_blocks":[],"source":"file_ids = list(dict.fromkeys(int(row[\"file_id\"]) for row in all_symbols))"}
+
+# Source control-flow fact {"relative_line":53,"kind":"statement","enclosing_blocks":[],"source":"file_ordinals = {file_id: ordinal for ordinal, file_id in enumerate(file_ids, 1)}"}
+
+# Source control-flow fact {"relative_line":54,"kind":"statement","enclosing_blocks":[],"source":"symbols_by_file: dict[int, list[int]] = {}"}
+
+# Source control-flow fact {"relative_line":55,"kind":"statement","enclosing_blocks":[],"source":"symbol_metadata: dict[int, tuple[str, str, int, int, int, int]] = {}"}
+
+# Source control-flow fact {"relative_line":57,"kind":"statement","enclosing_blocks":["loop over/while all_symbols"],"source":"file_id = int(row[\"file_id\"])"}
+
+# Source control-flow fact {"relative_line":58,"kind":"statement","enclosing_blocks":["loop over/while all_symbols"],"source":"symbols_by_file.setdefault(file_id, []).append(int(row[\"id\"]))"}
+
+# Source control-flow fact {"relative_line":59,"kind":"statement","enclosing_blocks":[],"source":"function_ordinals = {\n        symbol_id: ordinal\n        for file_symbols in symbols_by_file.values()\n        for ordinal, symbol_id in enumerate(file_symbols, 1)\n    }"}
+
+# Referenced imports and module declarations
+
+AnalysisRequest = Callable[..., analysis_engine.FunctionAnalysisResult]
+
+BatchAnalysisRequest = Callable[..., dict[str, analysis_engine.FunctionAnalysisResult]]
+
+from typing import Callable
+
+ConnectionFactory = Callable[[], AbstractContextManager[sqlite3.Connection]]
+
+from app_config import FUNCTION_ANALYSIS_BATCH_MAX_CHARS, FUNCTION_ANALYSIS_BATCH_SIZE, FUNCTION_ANALYSIS_CHUNK_CHARS, FUNCTION_ANALYSIS_CONTEXT_CHARS, FUNCTION_ANALYSIS_MAX_SOURCE_CHARS, OLLAMA_MODEL
+
+class FunctionAnalysisTask:
+    symbol_id: int
+    project_id: str
+    user_id: int
+    file_id: int
+    file_path: str
+    language: str
+    symbol_kind: str
+    qualified_name: str
+    start_line: int
+    end_line: int
+    source_sha256: str
+    function_sha256: str
+    source: str
+    semantic_function_sha256: str = ''
+    analysis_context: str = ''
+    cache_function_sha256: str = ''
+    semantic_cache_function_sha256: str = ''
+
+ProgressCallback = Callable[[str, int, int, str, str, int, int, int, int], None]
+
+class ProjectFunctionAnalysisSummary:
+    status: str
+    total_count: int
+    completed_count: int
+    failed_count: int
+    skipped_count: int
+    cache_hit_count: int = 0
+
+class StaleSymbolSource(ValueError):
+    ...
+
+_DEFAULT_ANALYSIS_REQUEST = analysis_engine.request_function_analysis
+
+_DEFAULT_BATCH_ANALYSIS_REQUEST = analysis_engine.request_function_analysis_batch
+
+def _analyze_project_function_batches(connection_factory: ConnectionFactory, project_id: str, selected_ids: list[int], symbol_metadata: dict[int, tuple[str, str, int, int, int, int]], *, total: int, chunk_chars: int, batch_request: BatchAnalysisRequest, cancel_check: Callable[[], bool] | None, pause_wait: Callable[[], None] | None, progress_callback: ProgressCallback | None) -> tuple[set[int], bool]: ...
+
+def _fallback_function_analysis_result(task: FunctionAnalysisTask, exc: BaseException) -> analysis_engine.FunctionAnalysisResult: ...
+
+def _is_malformed_model_json_error(exc: BaseException) -> bool: ...
+
+import analysis_engine
+
+def deterministic_analysis_contract_is_complete(task: FunctionAnalysisTask, result: analysis_engine.FunctionAnalysisResult) -> bool: ...
+
+def deterministic_analysis_is_sufficient(result: analysis_engine.FunctionAnalysisResult) -> bool: ...
+
+def deterministic_python_analysis(task: FunctionAnalysisTask) -> analysis_engine.FunctionAnalysisResult: ...
+
+def deterministic_python_contract(task: FunctionAnalysisTask, result: analysis_engine.FunctionAnalysisResult) -> analysis_engine.FunctionAnalysisResult: ...
+
+def filter_source_proven_false_issues(db: sqlite3.Connection, task: FunctionAnalysisTask, result: analysis_engine.FunctionAnalysisResult) -> analysis_engine.FunctionAnalysisResult: ...
+
+def load_cached_function_analysis(db: sqlite3.Connection, task: FunctionAnalysisTask) -> analysis_engine.FunctionAnalysisResult | None: ...
+
+def load_function_analysis_task(db: sqlite3.Connection, symbol_id: int) -> FunctionAnalysisTask: ...
+
+def mark_symbol_analysis(db: sqlite3.Connection, symbol_id: int, status: str, error: str | None, *, increment_attempt: bool) -> None: ...
+
+def merge_function_chunk_analyses(results: list[analysis_engine.FunctionAnalysisResult]) -> analysis_engine.FunctionAnalysisResult: ...
+
+def persist_function_analysis(db: sqlite3.Connection, task: FunctionAnalysisTask, result: analysis_engine.FunctionAnalysisResult, *, cache_result: bool=True) -> None: ...
+
+def refresh_project_function_analysis(db: sqlite3.Connection, project_id: str, *, forced_status: str | None=None) -> ProjectFunctionAnalysisSummary: ...
+
+def split_function_source(source: str, start_line: int, *, chunk_chars: int) -> list[FunctionSourceChunk]: ...
+
+# Directly referenced project symbols
+
+# Fixed/analysis_engine.py
+class AnalysisCancelled(Exception):
+    ...

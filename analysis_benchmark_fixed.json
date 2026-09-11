@@ -1,0 +1,47 @@
+{
+  "format_version": 1,
+  "name": "Fixed seeded-fault benchmark",
+  "expected": [
+    {
+      "id": "undefined-fact-name",
+      "path": "analysis_engine.py",
+      "source_contains": "values.update(str(value) for value in fact[key])",
+      "analyzer": "function",
+      "category": "type",
+      "title_pattern": "undefined|assignment|NameError",
+      "allowed_severities": [
+        "error"
+      ]
+    },
+    {
+      "id": "undefined-uploads-name",
+      "path": "main.py",
+      "source_contains": "uploads[0].filename or \"Uploaded project.zip\"",
+      "analyzer": "function",
+      "category": "type",
+      "title_pattern": "undefined|assignment|NameError",
+      "allowed_severities": [
+        "error"
+      ]
+    },
+    {
+      "id": "folder-name-index",
+      "path": "project_uploads.py",
+      "source_contains": "first_parts[1] if first_parts else \"Uploaded folder\"",
+      "analyzer": "function",
+      "title_pattern": "index|bounds|IndexError",
+      "allowed_severities": [
+        "unsafe",
+        "error"
+      ]
+    }
+  ],
+  "clean_regions": [
+    {
+      "id": "read-limited-boundary-probe",
+      "path": "project_uploads.py",
+      "start_contains": "def read_limited(stream: BinaryIO, maximum: int, label: str) -> bytes:",
+      "end_contains": "def project_file(path: str, content: bytes) -> ProjectFile:"
+    }
+  ]
+}

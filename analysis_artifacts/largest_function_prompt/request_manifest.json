@@ -1,0 +1,25 @@
+{
+  "model": "gpt-oss:20b",
+  "stream": true,
+  "think": "low",
+  "options": {
+    "num_ctx": 65536,
+    "num_predict": 4096,
+    "temperature": 0,
+    "top_k": 40,
+    "top_p": 0.9,
+    "repeat_last_n": 512,
+    "repeat_penalty": 1.0
+  },
+  "format": "See output_schema.json (the actual request embeds that same object)",
+  "messages": [
+    {
+      "role": "system",
+      "content": "See effective_system_prompt.txt"
+    },
+    {
+      "role": "user",
+      "content": "See analysis_prompt.txt"
+    }
+  ]
+}

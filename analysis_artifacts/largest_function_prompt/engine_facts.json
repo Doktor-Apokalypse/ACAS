@@ -1,0 +1,119 @@
+{
+  "version": "source-facts-v4",
+  "language": "python",
+  "source_sha256": "8741c05d1b5d8b55c783b1576d12f145033ef6f44f27f381d6a54b282781e205",
+  "target": {
+    "qualified_name": "analyze_project_functions",
+    "start_line": 2795,
+    "end_line": 3088
+  },
+  "syntax_valid": true,
+  "signature_complete": true,
+  "parameters": [
+    {
+      "name": "connection_factory",
+      "kind": "positional_or_keyword",
+      "required": true,
+      "declared_type": "ConnectionFactory",
+      "default": null
+    },
+    {
+      "name": "project_id",
+      "kind": "positional_or_keyword",
+      "required": true,
+      "declared_type": "str",
+      "default": null
+    },
+    {
+      "name": "analysis_request",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "AnalysisRequest | None",
+      "default": "Default: None"
+    },
+    {
+      "name": "batch_analysis_request",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "BatchAnalysisRequest | None",
+      "default": "Default: None"
+    },
+    {
+      "name": "chunk_analysis_request",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "AnalysisRequest | None",
+      "default": "Default: None"
+    },
+    {
+      "name": "cancel_check",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "Callable[[], bool] | None",
+      "default": "Default: None"
+    },
+    {
+      "name": "pause_wait",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "Callable[[], None] | None",
+      "default": "Default: None"
+    },
+    {
+      "name": "progress_callback",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "ProgressCallback | None",
+      "default": "Default: None"
+    },
+    {
+      "name": "retry_failed",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "bool",
+      "default": "Default: False"
+    },
+    {
+      "name": "limit",
+      "kind": "keyword_only",
+      "required": false,
+      "declared_type": "int | None",
+      "default": "Default: None"
+    }
+  ],
+  "declared_return_type": "ProjectFunctionAnalysisSummary",
+  "return_expressions": [
+    {
+      "relative_line": 102,
+      "kind": "Return",
+      "expression": "refresh_project_function_analysis(\n                    db,\n                    project_id,\n                    forced_status=\"cancelled\",\n                )"
+    },
+    {
+      "relative_line": 115,
+      "kind": "Return",
+      "expression": "refresh_project_function_analysis(\n                    db, project_id, forced_status=\"cancelled\"\n                )"
+    },
+    {
+      "relative_line": 263,
+      "kind": "Return",
+      "expression": "refresh_project_function_analysis(\n                    db, project_id, forced_status=\"cancelled\"\n                )"
+    },
+    {
+      "relative_line": 294,
+      "kind": "Return",
+      "expression": "refresh_project_function_analysis(db, project_id)"
+    }
+  ],
+  "raise_expressions": [
+    {
+      "relative_line": 210,
+      "kind": "Raise",
+      "expression": "analysis_engine.AnalysisCancelled(\"Analysis cancelled\")"
+    }
+  ],
+  "observations_truncated": false,
+  "decorators": [],
+  "unresolved_parameter_types": [],
+  "return_inference_needed": false,
+  "interpretation": "Declarations are source facts, not runtime guarantees. Return/raise expressions are occurrences, not proof of reachability or escaping exceptions. relative_line counts from the full function's first line as 1, including during fragment review. Review guards and handlers in source/context."
+}
