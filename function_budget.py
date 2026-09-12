@@ -6,11 +6,14 @@ import builtins
 import hashlib
 import json
 import math
+import sqlite3
 import textwrap
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Protocol, TypeVar
 
 from language_adapters.registry import get_adapter
 
@@ -245,7 +248,27 @@ def prepare_budget(db, task, *, source: str | None = None, recursive: bool = Fal
 @dataclass
 class RequestBudget:
     output_tokens: int
-    emit: object
+    emit: Callable[[dict[str, object]], None]
+
+
+class BudgetTask(Protocol):
+    symbol_id: int
+    project_id: str
+    user_id: int
+    file_id: int
+    language: str
+    qualified_name: str
+    source: str
+
+
+class ReviewResult(Protocol):
+    review_status: str
+
+
+BudgetPayload = dict[str, object]
+ReviewPayload = ReviewResult | dict[str, ReviewResult]
+ReviewPayloadT = TypeVar("ReviewPayloadT", bound=ReviewPayload)
+ConnectionFactory = Callable[[], AbstractContextManager[sqlite3.Connection]]
 
 
 _active: ContextVar[RequestBudget | None] = ContextVar("function_output_budget", default=None)
@@ -256,33 +279,49 @@ def selected_output_limit(default: int) -> int:
     return active.output_tokens if active else default
 
 
-def observe_usage(event: dict) -> None:
+def observe_usage(event: dict[str, object]) -> None:
     active = _active.get()
     if active:
         active.emit(event)
 
 
-def save_budget(db, task, budget: dict) -> None:
+def save_budget(
+    db: sqlite3.Connection,
+    task: BudgetTask,
+    budget: BudgetPayload,
+) -> None:
     db.execute("""INSERT INTO function_analysis_budgets(symbol_id,budget_json) VALUES (?,?)
                   ON CONFLICT(symbol_id) DO UPDATE SET budget_json=excluded.budget_json,updated_at=CURRENT_TIMESTAMP""",
                (task.symbol_id, json.dumps(budget)))
 
 
 @contextmanager
-def budgeted_request(connection_factory, tasks, budgets, *, batch=False):
+def budgeted_request(
+    connection_factory: ConnectionFactory,
+    tasks: Sequence[BudgetTask],
+    budgets: Sequence[BudgetPayload],
+    *,
+    batch: bool = False,
+) -> Iterator[Callable[[ReviewPayload], None]]:
     """Isolate each request, persist only counters, and never assign batch tokens to a function."""
     from app_config import FUNCTION_ANALYSIS_ADAPTIVE_OUTPUT, FUNCTION_ANALYSIS_BATCH_MAX_OUTPUT_TOKENS, FUNCTION_ANALYSIS_MAX_OUTPUT_TOKENS
-    required = sum(b["estimated_total_tokens"] for b in budgets) if batch else budgets[0]["output_tokens"]
-    if not batch and budgets[0]["features"].get("semantic_review"):
-        limit = budgets[0]["output_tokens"]
+    if not tasks or not budgets or len(tasks) != len(budgets):
+        raise ValueError("Budgeted requests require one budget for every task")
+    required = (
+        sum(int(b["estimated_total_tokens"]) for b in budgets)
+        if batch else int(budgets[0]["output_tokens"])
+    )
+    features = budgets[0].get("features")
+    if not batch and isinstance(features, dict) and features.get("semantic_review"):
+        limit = int(budgets[0]["output_tokens"])
     else:
         limit = next((t for t in TIERS if t>=required), TIERS[-1])
     if batch:
         limit = min(limit, FUNCTION_ANALYSIS_BATCH_MAX_OUTPUT_TOKENS)
     if not FUNCTION_ANALYSIS_ADAPTIVE_OUTPUT:
         limit = FUNCTION_ANALYSIS_BATCH_MAX_OUTPUT_TOKENS if batch else FUNCTION_ANALYSIS_MAX_OUTPUT_TOKENS
-    events = []
-    def emit(event):
+    events: list[dict[str, object]] = []
+    def emit(event: dict[str, object]) -> None:
         if event.get("event") == "start":
             with connection_factory() as db:
                 for task, budget in zip(tasks, budgets):
@@ -292,7 +331,7 @@ def budgeted_request(connection_factory, tasks, budgets, *, batch=False):
             events.append(event)
     token = _active.set(RequestBudget(limit, emit))
     outcome = "error"
-    def validated(result):
+    def validated(result: ReviewPayload) -> None:
         nonlocal outcome
         results = result.values() if isinstance(result, dict) else [result]
         outcome = "valid_response" if all(r.review_status == "complete" for r in results) else "invalid_response"
@@ -320,7 +359,15 @@ def budgeted_request(connection_factory, tasks, budgets, *, batch=False):
                            (task.user_id, task.user_id))
 
 
-def run_budgeted(connection_factory, tasks, budgets, call, *, batch=False, **kwargs):
+def run_budgeted(
+    connection_factory: ConnectionFactory,
+    tasks: Sequence[BudgetTask],
+    budgets: Sequence[BudgetPayload],
+    call: Callable[..., ReviewPayloadT],
+    *,
+    batch: bool = False,
+    **kwargs: object,
+) -> ReviewPayloadT:
     with budgeted_request(connection_factory, tasks, budgets, batch=batch) as validated:
         result = call(**kwargs)
         validated(result)

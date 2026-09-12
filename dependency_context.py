@@ -178,12 +178,14 @@ def python_control_flow_items(source: str, start_line: int) -> list[str]:
     function = next((node for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
     if function is None:
         return []
-    events = []
+    events: list[str] = []
 
-    def excerpt(node):
+    def excerpt(node: ast.AST | None) -> str:
+        if node is None:
+            return ""
         return (ast.get_source_segment(fragment, node) or "")[:320]
 
-    def visit(statements, path):
+    def visit(statements: list[ast.stmt], path: list[str]) -> None:
         for statement in statements:
             if len(events) >= 32 or len(path) > 8:
                 return

@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from types import SimpleNamespace
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import Field
 
@@ -96,7 +96,7 @@ def semantic_review_schema(engine_facts: dict | None = None) -> dict:
     return schema
 
 
-def _unknown(types) -> bool:
+def _unknown(types: list[str] | tuple[str, ...] | set[str]) -> bool:
     return not types or any(str(t).strip().casefold() in {
         "unknown", "any", "typing.any", "object", "dynamic",
     } for t in types)
@@ -696,8 +696,19 @@ def _load_semantic_review(raw: str, facts: dict) -> tuple[SemanticReview, list[s
     return SemanticReview.model_validate(data), adjustments
 
 
+AnchorItem: TypeAlias = (
+    ParameterInference
+    | BehaviorClaim
+    | EscapingErrorClaim
+    | SideEffectClaim
+    | engine.FunctionIssue
+    | SimpleNamespace
+)
+AnchorConversion: TypeAlias = Literal["relative", "evidence", "normalized_evidence"]
+
+
 def _anchor_rejection(
-    item,
+    item: AnchorItem,
     *,
     source: str,
     source_start_line: int,
@@ -752,12 +763,18 @@ def _unique_whitespace_normalized_excerpt(
     return excerpt, start_offset, start_offset + excerpt.count("\n")
 
 
-def _verified_anchor(item, **anchor_options):
+def _verified_anchor(
+    item: AnchorItem,
+    *,
+    source: str,
+    source_start_line: int,
+    allowed_start_line: int,
+    allowed_end_line: int,
+) -> tuple[AnchorItem, AnchorConversion | None, str | None]:
     """Accept verified source-relative output and normalize it to absolute file lines."""
     item_start = getattr(item, "start_line", None)
     item_end = getattr(item, "end_line", None)
-    source = anchor_options["source"]
-    source_start = anchor_options["source_start_line"]
+    source_start = source_start_line
     if isinstance(item_start, int) and isinstance(item_end, int):
         source_line_count = len(source.splitlines())
         if 1 <= item_start <= item_end <= source_line_count:
@@ -771,10 +788,22 @@ def _verified_anchor(item, **anchor_options):
                 relative_candidate = SimpleNamespace(
                     **{**vars(item), **updates},
                 )
-            reason = _anchor_rejection(relative_candidate, **anchor_options)
+            reason = _anchor_rejection(
+                relative_candidate,
+                source=source,
+                source_start_line=source_start_line,
+                allowed_start_line=allowed_start_line,
+                allowed_end_line=allowed_end_line,
+            )
             if reason is None:
                 return relative_candidate, "relative", None
-    reason = _anchor_rejection(item, **anchor_options)
+    reason = _anchor_rejection(
+        item,
+        source=source,
+        source_start_line=source_start_line,
+        allowed_start_line=allowed_start_line,
+        allowed_end_line=allowed_end_line,
+    )
     if reason is None:
         return item, None, None
     evidence = getattr(item, "evidence", None)
@@ -790,7 +819,11 @@ def _verified_anchor(item, **anchor_options):
             else:
                 evidence_candidate = SimpleNamespace(**{**vars(item), **updates})
             evidence_reason = _anchor_rejection(
-                evidence_candidate, **anchor_options
+                evidence_candidate,
+                source=source,
+                source_start_line=source_start_line,
+                allowed_start_line=allowed_start_line,
+                allowed_end_line=allowed_end_line,
             )
             if evidence_reason is None:
                 return evidence_candidate, "evidence", None
@@ -807,7 +840,11 @@ def _verified_anchor(item, **anchor_options):
             else:
                 evidence_candidate = SimpleNamespace(**{**vars(item), **updates})
             evidence_reason = _anchor_rejection(
-                evidence_candidate, **anchor_options
+                evidence_candidate,
+                source=source,
+                source_start_line=source_start_line,
+                allowed_start_line=allowed_start_line,
+                allowed_end_line=allowed_end_line,
             )
             if evidence_reason is None:
                 return evidence_candidate, "normalized_evidence", None

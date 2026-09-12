@@ -18,7 +18,7 @@ const html = web.match(/\nHTML = r"""([\s\S]*?)"""/)[1]
   .replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => ({USERNAME: 'Developer', MAX_MESSAGE_CHARS: '100000', DIRECT_MESSAGE_CHARS: '8000'}[key] || ''));
 const project = {id:'qa-project',chat_id:'qa-chat',name:'Multi-language engine',file_count:3,total_bytes:100,primary_language:'python',main_file_path:null,inventory_status:'completed',parser_status:'completed',structure_status:'completed',function_analysis_status:'pending',function_analysis_total_count:3};
 let uploads = [{id:1,name:'src',source_kind:'folder'},{id:2,name:'library.zip',source_kind:'zip'}];
-let files = [{id:1,path:'src/main.py',upload_batch_id:1},{id:2,path:'src/tools/helper.py',upload_batch_id:1},{id:3,path:'lib/helper.cpp',upload_batch_id:2}].map(file=>({...file,analysis_eligible:1,is_binary:0,function_count:2,processed_function_count:file.id===1?1:0,processing_function_count:0,failed_function_count:0,skipped_function_count:0}));
+let files = [{id:1,path:'src/main.py',upload_batch_id:1},{id:2,path:'src/tools/helper.py',upload_batch_id:1},{id:3,path:'lib/helper.cpp',upload_batch_id:2}].map(file=>({...file,analysis_eligible:1,is_binary:0,function_count:2,processed_function_count:file.id===1?1:0,processing_function_count:0,failed_function_count:0,skipped_function_count:0,error_function_count:0,warning_function_count:0}));
 const functions=[
   {id:101,file_id:1,name:'build_verified_source_inventory',qualified_name:'build_verified_source_inventory',start_line:10,end_line:35,header:'def build_verified_source_inventory(source: str) -> list[str]:',return_lines:[{line:35,code:'return inventory',flow_dependent:false}],description:'Builds a verified inventory of source identifiers.',description_status:'available'},
   {id:102,file_id:1,name:'request_function_analysis',qualified_name:'request_function_analysis',start_line:38,end_line:61,header:'def request_function_analysis(task: Task) -> Result:',return_lines:[],description:null,description_status:'unknown'},
@@ -26,7 +26,7 @@ const functions=[
   {id:202,file_id:2,name:'helper_two',qualified_name:'helper_two',start_line:5,end_line:8,header:'def helper_two():',return_lines:[],description:null,description_status:'unknown'},
   {id:301,file_id:3,name:'parse_value',qualified_name:'parse_value',start_line:2,end_line:9,header:'int parse_value(string value) {',return_lines:[],description:null,description_status:'unknown'},
   {id:302,file_id:3,name:'write_value',qualified_name:'write_value',start_line:11,end_line:18,header:'void write_value(int value) {',return_lines:[],description:null,description_status:'unknown'},
-];
+].map(item=>({...item,error_count:0,warning_count:0}));
 const mutations = [], errors = [];
 let activeJob=null;
 files[0].analysis_budget={symbol_name:'build_verified_source_inventory',complexity_score:42,dependency_score:58,dependency_count:5,estimated_json_tokens:1200,output_tokens:8192,uncertainty:[]};
@@ -80,6 +80,7 @@ let browser, socket, temporary;
   assert.equal(await evaluate("document.querySelector('#mode-picker')===null&&selectedRequestMode()==='analyse'"),true);
   assert.equal(await evaluate("Math.round(document.querySelector('.app').getBoundingClientRect().width)"),1280);
   assert.equal(await evaluate("projectUploadTarget.value"),'qa-project');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-function[data-analysis-state=\"pending\"]')).color"),'rgb(174, 184, 199)');
   await evaluate("document.querySelector('[aria-label=\"Actions for Multi-language engine\"]').click()");
   assert.deepEqual(await evaluate("[...projectTreeMenu.querySelectorAll('button')].map(button=>button.textContent)"),['Rename','Delete']);
   await evaluate("window.prompt=()=> 'Renamed analysis project';[...projectTreeMenu.querySelectorAll('button')].find(button=>button.textContent==='Rename').click()");
@@ -107,7 +108,8 @@ let browser, socket, temporary;
   await evaluate("closeProjectTreeMenu()");
   await evaluate("document.querySelector('[aria-label=\"Actions for main.py\"]').click(); [...projectTreeMenu.querySelectorAll('button')].find(button=>button.textContent==='Set as main file').click()");
   await until("document.querySelector('.tree-main')?.textContent==='Main'");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file.is-main .tree-name')).color"),'rgb(74, 222, 128)');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file.is-main .tree-name')).color"),'rgb(174, 184, 199)');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file.is-main .tree-main')).color"),'rgb(74, 222, 128)');
   await evaluate("window.confirm=()=>true;document.querySelector('[aria-label=\"Actions for tools\"]').closest('.tree-row').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:100,clientY:100}));[...projectTreeMenu.querySelectorAll('button')].find(button=>button.textContent==='Delete').click()");
   await until("!projectTree.textContent.includes('helper.py')&&!projectUploading");
   assert.equal(files.some(file=>file.path==='lib/helper.cpp'),true);
@@ -177,13 +179,19 @@ let browser, socket, temporary;
   files.find(file=>file.id===3).processing_function_count=1;
   await until("document.querySelector('.tree-file.is-main.is-processed')&&document.querySelector('.tree-file[data-file-id=\"3\"].is-analysing')");
   assert.equal(await evaluate("qaMainRow===document.querySelector('.tree-file.is-main')&&!qaFolder.open"),true,'Progress preserves folder expansion and row identity');
-  assert.equal(await evaluate("getComputedStyle(qaMainRow.querySelector('.tree-name')).color"),'rgb(74, 222, 128)');
+  assert.equal(await evaluate("getComputedStyle(qaMainRow.querySelector('.tree-name')).color"),'rgb(255, 255, 255)');
   assert.equal(await evaluate("qaMainRow.querySelector('.tree-state').textContent"),'✓');
+  files.find(file=>file.id===1).warning_function_count=1;
+  functions.find(item=>item.id===101).warning_count=1;
+  await until("document.querySelector('.tree-file.is-main.has-warnings')&&document.querySelector('.tree-function[data-symbol-id=\"101\"].has-warnings')");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-function[data-symbol-id=\"101\"]')).color"),'rgb(251, 191, 36)');
+  files.find(file=>file.id===1).warning_function_count=0;
+  functions.find(item=>item.id===101).warning_count=0;
   files.find(file=>file.id===3).processing_function_count=0;
   files.find(file=>file.id===3).processed_function_count=2;
   files.find(file=>file.id===3).failed_function_count=1;
   await until("document.querySelector('.tree-file[data-file-id=\"3\"].is-processed.is-mixed')");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file[data-file-id=\"3\"] .tree-name')).color"),'rgb(251, 191, 36)');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file[data-file-id=\"3\"] .tree-name')).color"),'rgb(248, 113, 113)');
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-function.is-failed')).color"),'rgb(248, 113, 113)');
   assert.match(await evaluate("document.querySelector('.tree-file[data-file-id=\"3\"]').title"),/1 failed/);
   files.find(file=>file.id===3).failed_function_count=2;

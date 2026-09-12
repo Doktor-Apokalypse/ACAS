@@ -49,11 +49,50 @@ class ProjectTreeTests(DatabaseTestCase):
         self.assertEqual(states()["main.py"]["analysis_state"], "pending", "One finished function does not finish a file")
         with main.connect_db() as db:
             db.execute("UPDATE project_symbols SET analysis_status='failed' WHERE project_id=? AND name='second'", (project["id"],))
+            db.execute(
+                """INSERT INTO project_symbol_analyses(
+                       symbol_id, project_id, file_id, contract_version, model_name,
+                       source_sha256, response_json, summary, syntax_valid,
+                       may_return_value, return_nullable, return_description,
+                       raised_errors_json, side_effects_json, confidence
+                   ) SELECT id, project_id, file_id, '1.0', 'test',
+                            '0000000000000000000000000000000000000000000000000000000000000000',
+                            '{}', '', 1, 0, 0, '', '[]', '[]', 1.0
+                     FROM project_symbols WHERE project_id=? AND name IN ('first','second')""",
+                (project["id"],),
+            )
+            db.execute(
+                """INSERT INTO project_symbol_issues(
+                       symbol_id, ordinal, severity, category, title, description,
+                       start_line, end_line, provenance
+                   ) SELECT id, 0, 'warning', 'logic', 'Warning', 'Warning detail',
+                            start_line, start_line, 'deterministic'
+                     FROM project_symbols WHERE project_id=? AND name='first'""",
+                (project["id"],),
+            )
+            db.execute(
+                """INSERT INTO project_symbol_issues(
+                       symbol_id, ordinal, severity, category, title, description,
+                       start_line, end_line, provenance
+                   ) SELECT id, 0, 'error', 'runtime', 'Error', 'Error detail',
+                            start_line, start_line, 'deterministic'
+                     FROM project_symbols WHERE project_id=? AND name='second'""",
+                (project["id"],),
+            )
             db.execute("UPDATE chat_jobs SET progress_stage='paused' WHERE id='tree-progress'")
-        paused = states()
+        paused_tree = self.tree(project["id"])
+        paused = {file["path"]: file for file in paused_tree["files"]}
         self.assertEqual(paused["main.py"]["analysis_state"], "processed")
         self.assertEqual(paused["main.py"]["processed_function_count"], 2)
         self.assertEqual(paused["main.py"]["failed_function_count"], 1)
+        self.assertEqual(paused["main.py"]["error_function_count"], 1)
+        self.assertEqual(paused["main.py"]["warning_function_count"], 1)
+        function_findings = {
+            item["name"]: (item["error_count"], item["warning_count"])
+            for item in paused_tree["functions"]
+        }
+        self.assertEqual(function_findings["first"], (0, 1))
+        self.assertEqual(function_findings["second"], (1, 0))
         self.assertEqual(paused["helper.py"]["analysis_state"], "paused")
         with main.connect_db() as db:
             db.execute("UPDATE chat_jobs SET status='failed' WHERE id='tree-progress'")

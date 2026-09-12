@@ -2936,7 +2936,15 @@ def get_project_tree(project_id: str, request: Request) -> dict[str, object]:
                       COALESCE(SUM(s.analysis_status IN ('completed','failed','skipped')),0) AS processed_function_count,
                       COALESCE(SUM(s.analysis_status='processing'),0) AS processing_function_count,
                       COALESCE(SUM(s.analysis_status='failed'),0) AS failed_function_count,
-                      COALESCE(SUM(s.analysis_status='skipped'),0) AS skipped_function_count
+                      COALESCE(SUM(s.analysis_status='skipped'),0) AS skipped_function_count,
+                      COALESCE(SUM(CASE WHEN EXISTS(
+                          SELECT 1 FROM project_symbol_issues i
+                          WHERE i.symbol_id=s.id AND i.severity='error'
+                      ) THEN 1 ELSE 0 END),0) AS error_function_count,
+                      COALESCE(SUM(CASE WHEN EXISTS(
+                          SELECT 1 FROM project_symbol_issues i
+                          WHERE i.symbol_id=s.id AND i.severity IN ('warning','unsafe')
+                      ) THEN 1 ELSE 0 END),0) AS warning_function_count
                FROM project_files f LEFT JOIN project_symbols s ON s.file_id=f.id
                    AND s.symbol_kind IN ('function','method')
                WHERE f.project_id=? GROUP BY f.id ORDER BY f.path COLLATE NOCASE, f.path""",
@@ -2952,7 +2960,11 @@ def get_project_tree(project_id: str, request: Request) -> dict[str, object]:
                           AS analysis_method,
                       CASE WHEN json_valid(a.response_json)
                            THEN json_extract(a.response_json, '$.review_status') END
-                          AS review_status
+                          AS review_status,
+                      (SELECT COUNT(*) FROM project_symbol_issues i
+                       WHERE i.symbol_id=s.id AND i.severity='error') AS error_count,
+                      (SELECT COUNT(*) FROM project_symbol_issues i
+                       WHERE i.symbol_id=s.id AND i.severity IN ('warning','unsafe')) AS warning_count
                FROM project_symbols s
                JOIN project_files f ON f.id=s.file_id
                LEFT JOIN project_symbol_analyses a ON a.symbol_id=s.id

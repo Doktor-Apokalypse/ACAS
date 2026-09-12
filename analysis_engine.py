@@ -969,7 +969,15 @@ def normalize_function_analysis_payload_locally(
 
 
 def _request_validated_function_review(
-    messages: list[dict[str, str]], **options,
+    messages: list[dict[str, str]],
+    *,
+    system_prompt: str = SYSTEM_PROMPT,
+    num_predict: int | None = None,
+    temperature: float | None = None,
+    response_format: str | dict[str, object] | None = None,
+    adaptive_context: bool = False,
+    cancel_check: Callable[[], bool] | None = None,
+    request_timeout: float | None = None,
 ) -> FunctionAnalysisResult:
     """Retry an invalid individual review once, using source and validation feedback.
 
@@ -977,14 +985,23 @@ def _request_validated_function_review(
     into smaller groups in the project runner and do not use this retry loop.
     """
     active_messages = list(messages)
-    active_options = dict(options)
-    active_options.setdefault("request_timeout", FUNCTION_ANALYSIS_REQUEST_TIMEOUT)
+    active_num_predict = num_predict
+    active_temperature = temperature
+    active_request_timeout = request_timeout or FUNCTION_ANALYSIS_REQUEST_TIMEOUT
     for attempt in range(2):
-        cancel_check = active_options.get("cancel_check")
         if cancel_check and cancel_check():
             raise AnalysisCancelled("Analysis cancelled by user")
         try:
-            raw = ask_ollama(active_messages, **active_options)
+            raw = ask_ollama(
+                active_messages,
+                system_prompt=system_prompt,
+                num_predict=active_num_predict,
+                temperature=active_temperature,
+                response_format=response_format,
+                adaptive_context=adaptive_context,
+                cancel_check=cancel_check,
+                request_timeout=active_request_timeout,
+            )
             result = normalize_function_analysis_payload_locally(raw)
             if result.review_status == "complete" or attempt:
                 return result
@@ -996,13 +1013,13 @@ def _request_validated_function_review(
                 raise
             detail = str(exc)[:1000]
             if isinstance(exc, StructuredOutputTruncated):
-                active_options["num_predict"] = min(
-                    max(int(active_options.get("num_predict") or FUNCTION_ANALYSIS_MAX_OUTPUT_TOKENS) * 2,
+                active_num_predict = min(
+                    max(int(active_num_predict or FUNCTION_ANALYSIS_MAX_OUTPUT_TOKENS) * 2,
                         FUNCTION_ANALYSIS_MAX_OUTPUT_TOKENS),
                     max(FUNCTION_ANALYSIS_MAX_OUTPUT_TOKENS, 16_384),
                 )
         LOGGER.info("Retrying one incomplete function review with validation feedback")
-        active_options["temperature"] = 0
+        active_temperature = 0
         active_messages = [*messages, {
             "role": "user",
             "content": (
