@@ -3138,7 +3138,7 @@ def set_project_main_file(project_id: str, payload: ProjectMainFile, request: Re
             if file is None:
                 raise HTTPException(404, "Project file not found")
             if file["is_binary"] or not file["analysis_eligible"]:
-                raise HTTPException(422, "Select a source file as the main file")
+                raise HTTPException(422, "Select a source file as the entry point")
             path = file["path"]
         db.execute("UPDATE projects SET main_file_path = ? WHERE id = ?", (path, project_id))
         rebuild_project(db, project_id)

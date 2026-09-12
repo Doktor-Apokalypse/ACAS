@@ -454,6 +454,20 @@ class ProjectTreeTests(DatabaseTestCase):
         main.delete_project_entry(project["id"], ProjectEntryDelete(kind="upload", batch_id=tree["uploads"][1]["id"]), self.request)
         self.assertEqual([file["path"] for file in self.tree(project["id"])["files"]], ["main.py"])
 
+    def test_entry_point_can_switch_directly_between_source_files(self):
+        project = self.upload("files", {
+            "first.py": b"def first():\n    return 1\n",
+            "second.py": b"def second():\n    return 2\n",
+        })
+        files = {file["path"]: file for file in self.tree(project["id"])["files"]}
+
+        for path in ("first.py", "second.py", "first.py"):
+            response = main.set_project_main_file(
+                project["id"], ProjectMainFile(file_id=files[path]["id"]), self.request
+            )
+            self.assertEqual(response["project"]["main_file_path"], path)
+            self.assertEqual(self.tree(project["id"])["project"]["main_file_path"], path)
+
     def test_ownership_scope_and_active_job_guards(self):
         project = self.upload("files", {"main.py": b"def main():\n    return 1"})
         other = self.upload("files", {"other.py": b"def other():\n    return 2"})

@@ -27,7 +27,7 @@ TREE_CSS = r'''
 .project-tree ul{list-style:none;padding-left:18px;margin:2px 0}.project-tree>details>ul{padding-left:6px}
 .project-tree summary{cursor:pointer;padding:3px 0}.project-tree .tree-row{display:inline-flex;align-items:center;gap:6px;min-height:25px;max-width:100%}
 .tree-name{overflow-wrap:anywhere}.tree-project .tree-name{font-weight:700}.tree-main{color:#4ade80;font-weight:bold;white-space:nowrap}.tree-kind{color:#94a3b8}
-.tree-file,.tree-function{color:#aeb8c7}.tree-file.is-processed,.tree-function.is-processed{color:#fff}.tree-file.is-analysing,.tree-function.is-analysing{color:#22d3ee}
+.tree-file,.tree-function{color:#aeb8c7}.tree-file.is-processed,.tree-function.is-processed{color:#fff}.tree-file.is-main{color:#4ade80}.tree-file.is-analysing,.tree-function.is-analysing{color:#22d3ee}
 .tree-function{font-family:Consolas,"Courier New",monospace;cursor:pointer}.tree-file.has-warnings,.tree-function.has-warnings,.tree-function.is-skipped{color:#fbbf24}.tree-file.has-errors,.tree-function.has-errors,.tree-function.is-failed{color:#f87171}
 .tree-state{white-space:nowrap;font-weight:bold}.tree-file.is-paused .tree-state,.tree-function.is-paused .tree-state{color:#fbbf24}
 .message-form .tree-actions{padding:0 6px;min-height:24px;border:0;background:transparent;color:#cbd5e1;font-size:18px}
@@ -168,7 +168,7 @@ function showProjectTreeMenu(event,project,entry){
     if(entry.description_status!=='available')action('Get description',()=>requestFunctionDescription(project,entry));
   }else if(entry.kind==='file'&&!entry.is_binary&&entry.analysis_eligible){
     const isMain=project.main_file_path===entry.path;
-    action(isMain?'Clear main file':'Set as main file',()=>editProjectTree(project,'main-file','PUT',{file_id:isMain?null:entry.file_id}));
+    action(isMain?'Clear Entry Point':'Set Entry Point',()=>editProjectTree(project,'main-file','PUT',{file_id:isMain?null:entry.file_id}));
   }
   if(!['project','function'].includes(entry.kind))action('Delete',()=>{if(confirm('Delete '+entry.label+(entry.kind==='file'?'':' and its contents')+' from this project?'))editProjectTree(project,'entries','DELETE',{kind:entry.kind,file_id:entry.file_id,batch_id:entry.batch_id,path:entry.path})});
   projectTreeMenu.hidden=false;
@@ -181,7 +181,7 @@ function showProjectTreeMenu(event,project,entry){
 function treeEntryLabel(project,entry){
   const row=document.createElement('span');row.className='tree-row';
   const name=document.createElement('span');name.className='tree-name';name.textContent=entry.label;row.append(name);
-  if(entry.kind==='file'&&entry.path===project.main_file_path){const badge=document.createElement('span');badge.className='tree-main';badge.textContent='Main';row.append(badge)}
+  if(entry.kind==='file'&&entry.path===project.main_file_path){const badge=document.createElement('span');badge.className='tree-main';badge.textContent='Entry Point';row.append(badge)}
   if(entry.kind==='upload'){const kind=document.createElement('span');kind.className='tree-kind';kind.textContent='('+entry.source_kind.toUpperCase()+')';row.append(kind)}
   const hasActions=entry.kind!=='function'||entry.description_status!=='available';
   if(hasActions){const actions=document.createElement('button');actions.type='button';actions.className='tree-actions';actions.textContent='⋮';actions.setAttribute('aria-label','Actions for '+entry.label);actions.onclick=event=>showProjectTreeMenu(event,project,entry);row.append(actions);row.oncontextmenu=event=>showProjectTreeMenu(event,project,entry);row.onkeydown=event=>{if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey)showProjectTreeMenu(event,project,entry)}}
@@ -205,7 +205,7 @@ function updateTreeFileState(row,project,file){
   if(file.skipped_function_count)label+=' · '+file.skipped_function_count+' skipped';
   if(errors)label+=' · '+errors+' with errors';
   if(warnings)label+=' · '+warnings+' with warnings';
-  if(file.path===project.main_file_path)label='Main file · '+label;
+  if(file.path===project.main_file_path)label='Entry point · '+label;
   if(file.analysis_budget)label+=' · '+describeOutputBudget(file.analysis_budget);
   row.title=label;
   let marker=row.querySelector('.tree-state');
@@ -300,9 +300,9 @@ async function renameAttachedProject(project){
 }
 async function editProjectTree(project,endpoint,method,payload){
   if(projectUploading||activeWatcherForProject(project.id))return;
-  const chatId=currentChatId;projectUploading=true;projectUploadTarget.disabled=true;syncComposerAvailability();
-  try{const response=await fetch('/api/projects/'+encodeURIComponent(project.id)+'/'+endpoint,{method,cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(redirectFor(response))return;const data=await readResponse(response);if(!response.ok)throw Error(errorText(data,response));if(currentChatId===chatId){currentProjects=currentProjects.map(item=>item.id===project.id?data.project:item);renderProjectAttachments();projectUploadStatus.className='project-upload-status';projectUploadStatus.textContent=endpoint==='entries'?'Deleted '+data.deleted_file_count+' file(s). Analysis has been reset.':'Main file updated. Analysis has been reset.';if(projectReportState?.projectId===project.id)closeProjectReport()}}
+  const chatId=currentChatId;let refresh=false;projectUploading=true;projectUploadTarget.disabled=true;syncComposerAvailability();
+  try{const response=await fetch('/api/projects/'+encodeURIComponent(project.id)+'/'+endpoint,{method,cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(redirectFor(response))return;const data=await readResponse(response);if(!response.ok)throw Error(errorText(data,response));if(currentChatId===chatId){currentProjects=currentProjects.map(item=>item.id===project.id?data.project:item);refresh=true;projectUploadStatus.className='project-upload-status';projectUploadStatus.textContent=endpoint==='entries'?'Deleted '+data.deleted_file_count+' file(s). Analysis has been reset.':'Entry point updated. Analysis has been reset.';if(projectReportState?.projectId===project.id)closeProjectReport()}}
   catch(error){if(currentChatId===chatId){projectUploadStatus.className='project-upload-status error';projectUploadStatus.textContent=error.message}}
-  finally{projectUploading=false;syncComposerAvailability();syncProjectExplorer()}
+  finally{projectUploading=false;syncComposerAvailability();if(refresh){projectTreeSignature='';projectTreeStructureSignature='';renderProjectAttachments()}else syncProjectExplorer()}
 }
 '''

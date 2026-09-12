@@ -20,7 +20,7 @@ def owned_project(db: sqlite3.Connection, project_id: str, user_id: int, *, edit
         "SELECT 1 FROM chat_jobs WHERE project_id = ? AND status IN ('queued', 'processing') LIMIT 1",
         (project_id,),
     ).fetchone():
-        raise HTTPException(409, "Stop the project analysis before changing its files or main file")
+        raise HTTPException(409, "Stop the project analysis before changing its files or entry point")
     return project
 
 
