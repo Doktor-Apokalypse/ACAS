@@ -43,7 +43,7 @@ const server = http.createServer(async (req,res) => {
   if(req.url.endsWith('/qa-job/resume')){activeJob.progress_stage='analyzing_function';data={elapsed_seconds:632}}
   if(req.url.endsWith('/qa-job/cancel')){activeJob.status='failed';activeJob.error='Cancelled by user.';project.function_analysis_status='cancelled'}
   if(req.url.endsWith('/analysis-jobs'))for(const file of files){file.processed_function_count=0;file.processing_function_count=file.id===1?1:0;file.failed_function_count=0}
-  if(req.url.endsWith('/tree'))data={project,uploads,files:files.map(file=>({...file,analysis_state:activeJob?.status==='processing'&&file.processing_function_count?(activeJob.progress_stage==='paused'?'paused':'analysing'):file.function_count&&file.processed_function_count===file.function_count?'processed':file.function_count?'pending':'no_functions'})),functions:functions.filter(item=>files.some(file=>file.id===item.file_id)).map(item=>{const file=files.find(value=>value.id===item.file_id),ordinal=functions.filter(value=>value.file_id===item.file_id).findIndex(value=>value.id===item.id),passed=Math.max(0,file.processed_function_count-file.failed_function_count-file.skipped_function_count);return {...item,analysis_state:activeJob?.status==='processing'&&file.processing_function_count&&ordinal===0?(activeJob.progress_stage==='paused'?'paused':'analysing'):ordinal<passed?'processed':ordinal<passed+file.failed_function_count?'failed':ordinal<file.processed_function_count?'skipped':'pending'}})};
+  if(req.url.endsWith('/tree'))data={project,uploads,files:files.map(file=>({...file,analysis_state:activeJob?.status==='processing'&&file.processing_function_count?(activeJob.progress_stage==='paused'?'paused':'analysing'):file.function_count&&file.processed_function_count===file.function_count?'processed':file.function_count?'pending':'no_functions'})),functions:functions.filter(item=>files.some(file=>file.id===item.file_id)).map(item=>{const file=files.find(value=>value.id===item.file_id),ordinal=functions.filter(value=>value.file_id===item.file_id).findIndex(value=>value.id===item.id),passed=Math.max(0,file.processed_function_count-file.failed_function_count-file.skipped_function_count),analysis_state=activeJob?.status==='processing'&&file.processing_function_count&&ordinal===0?(activeJob.progress_stage==='paused'?'paused':'analysing'):ordinal<passed?'processed':ordinal<passed+file.failed_function_count?'failed':ordinal<file.processed_function_count?'skipped':'pending';return {...item,analysis_state,analysis_error:analysis_state==='failed'?'Incomplete model review: unresolved parameter type':null}})};
   if(req.url==='/api/projects/qa-project/functions/101/callers')data={function:functions[0],caller_count:2,callers:[{id:1,caller_symbol_id:102,caller_name:'request_function_analysis',path:'src/main.py',start_line:54,usage_kind:'assignment',callee:'build_verified_source_inventory',code:'build_verified_source_inventory(source)'},{id:2,caller_symbol_id:null,caller_name:null,path:'src/main.py',start_line:70,usage_kind:'statement',callee:'build_verified_source_inventory',code:'build_verified_source_inventory(default_source)'}]};
   if(req.url.endsWith('/main-file')){const payload=JSON.parse(body);project.main_file_path=files.find(file=>file.id===payload.file_id)?.path||null;mutations.push(payload);data={project}}
   if(req.url.endsWith('/entries')){const payload=JSON.parse(body);const before=files.length;files=files.filter(file=>payload.kind==='file'?file.id!==payload.file_id:!(file.upload_batch_id===payload.batch_id&&(payload.kind==='upload'||file.path.startsWith(payload.path+'/'))));uploads=uploads.filter(batch=>files.some(file=>file.upload_batch_id===batch.id));project.file_count=files.length;if(!files.some(file=>file.path===project.main_file_path))project.main_file_path=null;mutations.push(payload);data={project,deleted_file_count:before-files.length}}
@@ -196,12 +196,19 @@ let browser, socket, temporary;
   files.find(file=>file.id===3).processed_function_count=2;
   files.find(file=>file.id===3).failed_function_count=1;
   await until("document.querySelector('.tree-file[data-file-id=\"3\"].is-processed.is-mixed')");
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file[data-file-id=\"3\"] .tree-name')).color"),'rgb(248, 113, 113)');
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-function.is-failed')).color"),'rgb(248, 113, 113)');
-  assert.match(await evaluate("document.querySelector('.tree-file[data-file-id=\"3\"]').title"),/1 failed/);
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file[data-file-id=\"3\"] .tree-name')).color"),'rgb(251, 146, 60)');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-function.is-failed')).color"),'rgb(251, 146, 60)');
+  assert.equal(await evaluate("document.querySelector('.tree-function.is-failed .tree-state').textContent"),'?');
+  assert.match(await evaluate("document.querySelector('.tree-function.is-failed').title"),/Analysis review failed · Incomplete model review/);
+  assert.match(await evaluate("document.querySelector('.tree-file[data-file-id=\"3\"]').title"),/1 review failed/);
   files.find(file=>file.id===3).failed_function_count=2;
   await until("document.querySelector('.tree-file[data-file-id=\"3\"].is-all-failed')");
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file[data-file-id=\"3\"] .tree-name')).color"),'rgb(251, 146, 60)');
+  files.find(file=>file.id===3).error_function_count=1;
+  functions.find(item=>item.id===301).error_count=1;
+  await until("document.querySelector('.tree-file[data-file-id=\"3\"].has-errors')&&document.querySelector('.tree-function[data-symbol-id=\"301\"].has-errors')");
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-file[data-file-id=\"3\"] .tree-name')).color"),'rgb(248, 113, 113)');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.tree-function[data-symbol-id=\"301\"]')).color"),'rgb(248, 113, 113)');
   assert.equal(await evaluate("document.querySelector('.tree-file[data-file-id=\"4\"] .tree-state')===null"),true,'No-function files do not get completion ticks');
   await evaluate("qaFolder.open=true");
   files.find(file=>file.id===1).processed_function_count=0;

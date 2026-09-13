@@ -28,7 +28,7 @@ TREE_CSS = r'''
 .project-tree summary{cursor:pointer;padding:3px 0}.project-tree .tree-row{display:inline-flex;align-items:center;gap:6px;min-height:25px;max-width:100%}
 .tree-name{overflow-wrap:anywhere}.tree-project .tree-name{font-weight:700}.tree-main{color:#4ade80;font-weight:bold;white-space:nowrap}.tree-kind{color:#94a3b8}
 .tree-file,.tree-function{color:#aeb8c7}.tree-file.is-processed,.tree-function.is-processed{color:#fff}.tree-file.is-main{color:#4ade80}.tree-file.is-analysing,.tree-function.is-analysing{color:#22d3ee}
-.tree-function{font-family:Consolas,"Courier New",monospace;cursor:pointer}.tree-file.has-warnings,.tree-function.has-warnings,.tree-function.is-skipped{color:#fbbf24}.tree-file.has-errors,.tree-function.has-errors,.tree-function.is-failed{color:#f87171}
+.tree-function{font-family:Consolas,"Courier New",monospace;cursor:pointer}.tree-file.has-warnings,.tree-function.has-warnings,.tree-function.is-skipped{color:#fbbf24}.tree-file.has-review-failures,.tree-function.is-failed{color:#fb923c}.tree-file.has-errors,.tree-function.has-errors{color:#f87171}
 .tree-state{white-space:nowrap;font-weight:bold}.tree-file.is-paused .tree-state,.tree-function.is-paused .tree-state{color:#fbbf24}
 .message-form .tree-actions{padding:0 6px;min-height:24px;border:0;background:transparent;color:#cbd5e1;font-size:18px}
 .tree-actions:focus-visible,.project-tree summary:focus-visible{outline:2px solid #60a5fa}
@@ -136,7 +136,7 @@ function functionTooltip(item){
   const state=item.analysis_state||'pending';
   if(state==='analysing')description='Analysing · '+description;
   else if(state==='paused')description='Analysis paused · '+description;
-  else if(state==='failed')description='Analysis failed · '+description;
+  else if(state==='failed')description='Analysis review failed'+(item.analysis_error?' · '+item.analysis_error:'')+' · '+description;
   else if(state==='skipped')description='Analysis skipped · '+description;
   add(description);
   const returns=Array.isArray(item.return_lines)?item.return_lines:[];
@@ -191,17 +191,17 @@ function treeEntryLabel(project,entry){
   return row;
 }
 function updateTreeFileState(row,project,file){
-  const state=file.analysis_state||'pending',total=Number(file.function_count)||0,processed=Number(file.processed_function_count)||0,failed=Number(file.failed_function_count)||0,skipped=Number(file.skipped_function_count)||0,errors=Number(file.error_function_count)||0,warnings=Number(file.warning_function_count)||0,passed=Math.max(0,processed-failed-skipped),hasErrors=failed>0||errors>0,hasWarnings=!hasErrors&&(skipped>0||warnings>0);
+  const state=file.analysis_state||'pending',total=Number(file.function_count)||0,processed=Number(file.processed_function_count)||0,failed=Number(file.failed_function_count)||0,skipped=Number(file.skipped_function_count)||0,errors=Number(file.error_function_count)||0,warnings=Number(file.warning_function_count)||0,passed=Math.max(0,processed-failed-skipped),hasErrors=errors>0,hasReviewFailures=failed>0,hasWarnings=!hasErrors&&!hasReviewFailures&&(skipped>0||warnings>0);
   row.classList.toggle('is-main',file.path===project.main_file_path);
   row.classList.toggle('is-all-failed',total>0&&failed===total);
   row.classList.toggle('is-mixed',failed>0&&passed>0);
-  row.classList.toggle('has-errors',hasErrors);row.classList.toggle('has-warnings',hasWarnings);
+  row.classList.toggle('has-errors',hasErrors);row.classList.toggle('has-review-failures',hasReviewFailures);row.classList.toggle('has-warnings',hasWarnings);
   row.classList.toggle('is-analysing',state==='analysing');row.classList.toggle('is-paused',state==='paused');row.classList.toggle('is-processed',state==='processed');
   row.dataset.analysisState=state;
   let label=total?processed+' of '+total+' functions processed':'No indexed functions';
   if(state==='analysing')label='Analysing functions · '+label;
   else if(state==='paused')label='Analysis paused · '+label;
-  if(file.failed_function_count)label+=' · '+file.failed_function_count+' failed';
+  if(file.failed_function_count)label+=' · '+file.failed_function_count+' review'+(file.failed_function_count===1?'':'s')+' failed';
   if(file.skipped_function_count)label+=' · '+file.skipped_function_count+' skipped';
   if(errors)label+=' · '+errors+' with errors';
   if(warnings)label+=' · '+warnings+' with warnings';
@@ -213,14 +213,14 @@ function updateTreeFileState(row,project,file){
   if(mark){if(!marker){marker=document.createElement('span');marker.className='tree-state';row.insertBefore(marker,row.querySelector('.tree-actions'))}marker.textContent=mark;marker.setAttribute('aria-label',label)}else marker?.remove();
 }
 function updateTreeFunctionState(row,item){
-  const state=item.analysis_state||'pending',errors=Number(item.error_count)||0,warnings=Number(item.warning_count)||0,hasErrors=state==='failed'||errors>0,hasWarnings=!hasErrors&&(state==='skipped'||warnings>0);
+  const state=item.analysis_state||'pending',errors=Number(item.error_count)||0,warnings=Number(item.warning_count)||0,hasErrors=errors>0,hasWarnings=!hasErrors&&(state==='skipped'||warnings>0);
   for(const name of ['analysing','paused','processed','failed','skipped'])row.classList.toggle('is-'+name,state===name);
   row.classList.toggle('has-errors',hasErrors);row.classList.toggle('has-warnings',hasWarnings);
   row.dataset.analysisState=state;
   const label=functionTooltip(item);
   row.title=label;
   let marker=row.querySelector('.tree-state');
-  const mark=state==='processed'?'✓':state==='analysing'?'…':state==='paused'?'Ⅱ':state==='failed'?'!':'';
+  const mark=state==='processed'?'✓':state==='analysing'?'…':state==='paused'?'Ⅱ':state==='failed'?'?':'';
   if(mark){if(!marker){marker=document.createElement('span');marker.className='tree-state';row.insertBefore(marker,row.querySelector('.tree-actions'))}marker.textContent=mark;marker.setAttribute('aria-label',label)}else marker?.remove();
   if(state==='analysing'||state==='paused'){const group=row.closest('.tree-file-group');if(group)group.open=true}
 }

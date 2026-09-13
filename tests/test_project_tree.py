@@ -48,7 +48,13 @@ class ProjectTreeTests(DatabaseTestCase):
             db.execute("UPDATE project_symbols SET analysis_status='completed' WHERE project_id=? AND name='first'", (project["id"],))
         self.assertEqual(states()["main.py"]["analysis_state"], "pending", "One finished function does not finish a file")
         with main.connect_db() as db:
-            db.execute("UPDATE project_symbols SET analysis_status='failed' WHERE project_id=? AND name='second'", (project["id"],))
+            db.execute(
+                """UPDATE project_symbols
+                   SET analysis_status='failed',
+                       analysis_error='Incomplete model review: unresolved parameter type'
+                   WHERE project_id=? AND name='second'""",
+                (project["id"],),
+            )
             db.execute(
                 """INSERT INTO project_symbol_analyses(
                        symbol_id, project_id, file_id, contract_version, model_name,
@@ -93,6 +99,13 @@ class ProjectTreeTests(DatabaseTestCase):
         }
         self.assertEqual(function_findings["first"], (0, 1))
         self.assertEqual(function_findings["second"], (1, 0))
+        failed_function = next(
+            item for item in paused_tree["functions"] if item["name"] == "second"
+        )
+        self.assertEqual(
+            failed_function["analysis_error"],
+            "Incomplete model review: unresolved parameter type",
+        )
         self.assertEqual(paused["helper.py"]["analysis_state"], "paused")
         with main.connect_db() as db:
             db.execute("UPDATE chat_jobs SET status='failed' WHERE id='tree-progress'")

@@ -2953,7 +2953,7 @@ def get_project_tree(project_id: str, request: Request) -> dict[str, object]:
         functions = [dict(row) for row in db.execute(
             """SELECT s.id, s.file_id, s.name, s.qualified_name,
                       s.start_line, s.end_line, s.start_byte, s.end_byte,
-                      s.analysis_status, f.language,
+                      s.analysis_status, s.analysis_error, f.language,
                       a.summary,
                       CASE WHEN json_valid(a.response_json)
                            THEN json_extract(a.response_json, '$.analysis_method') END
