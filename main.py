@@ -202,7 +202,12 @@ from project_function_analysis import (
     refresh_project_function_analysis,
 )
 from project_call_compatibility import check_project_call_compatibility
-from project_tree_metadata import compact_source_excerpt, function_source_metadata
+from project_tree_metadata import (
+    compact_source_excerpt,
+    function_source_metadata,
+    function_summary_description,
+    merge_analyzed_return_types,
+)
 
 LOGGER = logging.getLogger("uvicorn.error")
 NTFY_MESSAGE_MAX_BYTES = 3_500
@@ -2979,6 +2984,18 @@ def get_project_tree(project_id: str, request: Request) -> dict[str, object]:
                 (project_id,),
             ).fetchall()
         }
+        return_types_by_symbol: dict[int, list[str]] = {}
+        for row in db.execute(
+            """SELECT return_type.symbol_id, return_type.type_name
+               FROM project_symbol_return_types AS return_type
+               JOIN project_symbols AS symbol ON symbol.id=return_type.symbol_id
+               WHERE symbol.project_id=?
+               ORDER BY return_type.symbol_id, return_type.ordinal""",
+            (project_id,),
+        ).fetchall():
+            return_types_by_symbol.setdefault(int(row["symbol_id"]), []).append(
+                str(row["type_name"])
+            )
         job = db.execute(
             """SELECT status, progress_stage FROM chat_jobs WHERE project_id=?
                AND job_kind='project_analysis' AND status IN ('queued','processing')
@@ -2995,6 +3012,10 @@ def get_project_tree(project_id: str, request: Request) -> dict[str, object]:
         for function in functions:
             function["content"] = source_by_file.get(int(function["file_id"]), b"")
             function.update(function_source_metadata(function))
+            function["return_lines"] = merge_analyzed_return_types(
+                function["return_lines"],
+                return_types_by_symbol.get(int(function["id"]), []),
+            )
             for internal_key in ("content", "language", "start_byte", "end_byte"):
                 function.pop(internal_key)
             summary = function.pop("summary")
@@ -3006,7 +3027,7 @@ def get_project_tree(project_id: str, request: Request) -> dict[str, object]:
                 and analysis_method in {"model", "deterministic"}
                 and review_status == "complete"
             ):
-                compact = " ".join(str(summary or "").split())
+                compact = function_summary_description(summary, function["qualified_name"])
                 if compact:
                     description = (
                         compact

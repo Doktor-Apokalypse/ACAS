@@ -140,12 +140,16 @@ function functionTooltip(item){
   else if(state==='skipped')description='Analysis skipped · '+description;
   add(description);
   const returns=Array.isArray(item.return_lines)?item.return_lines:[];
-  returns.forEach((value,index)=>{
+  const returnRows=[];
+  for(const value of returns){
     const code=String(value.code||'').trim(),codeKey=tooltipKey(code);
-    if(!codeKey||keys.some(existing=>existing.includes(codeKey)))return;
-    const ordinal=returns.length>1?' '+(index+1):'',flow=value.flow_dependent?' · flow dependent':'',line=value.line?' · line '+value.line:'';
-    add('Return'+ordinal+' ('+(flow+line).replace(/^ · /,'')+'): '+code);
-  });
+    if(!codeKey||returnRows.some(existing=>tooltipKey(existing.code)===codeKey))continue;
+    returnRows.push({code,type:String(value.return_type||'unknown').trim()||'unknown',flowDependent:Boolean(value.flow_dependent)});
+  }
+  if(returnRows.length){
+    const lines=returnRows.map(value=>value.code+' -> '+value.type);
+    add((returnRows.length>1&&returnRows.some(value=>value.flowDependent)?'Flow dependent returns:\n':'')+lines.join('\n'));
+  }
   return sections.join('\n\n');
 }
 async function showFunctionCallers(project,item,row){

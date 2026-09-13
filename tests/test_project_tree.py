@@ -147,6 +147,7 @@ class ProjectTreeTests(DatabaseTestCase):
             functions["second"]["description"],
             "Returns the supplied numeric value.",
         )
+        self.assertEqual(functions["second"]["return_lines"][0]["return_type"], "int")
         long_summary = (
             "second returns the supplied value after validating its input and preserving the "
             "documented parameter contract. The engine return contract is an integer result, "
@@ -162,12 +163,40 @@ class ProjectTreeTests(DatabaseTestCase):
             item["name"]: item for item in self.tree(project["id"])["functions"]
         }
         self.assertGreater(len(long_summary), 250)
-        self.assertEqual(functions["second"]["description"], long_summary)
+        self.assertEqual(
+            functions["second"]["description"],
+            "second returns the supplied value after validating its input and preserving the "
+            "documented parameter contract.",
+        )
+        self.assertNotIn(
+            "engine return contract",
+            functions["second"]["description"].casefold(),
+        )
         self.assertLessEqual(
             len(functions["second"]["description"]),
             main.FUNCTION_TREE_DESCRIPTION_MAX_CHARS,
         )
         self.assertIsNone(functions["first"]["description"])
+        self.assertEqual(
+            main.function_summary_description(
+                "render_evidence_review returns at line 2627 using "
+                "`return \"\\n\".join(lines).strip()`. The engine return contract is str.",
+                "render_evidence_review",
+            ),
+            "Formats the evidence review.",
+        )
+        merged_returns = main.merge_analyzed_return_types(
+            [
+                {"code": "return value1", "return_type": "unknown"},
+                {"code": "return value2.strip()", "return_type": "unknown"},
+                {"code": "return None", "return_type": "null"},
+            ],
+            ["int", "str"],
+        )
+        self.assertEqual(
+            [item["return_type"] for item in merged_returns],
+            ["int", "str", "null"],
+        )
         with self.assertRaises(HTTPException) as duplicate:
             main.start_project_function_description_job(
                 project["id"], functions["second"]["id"], self.request
@@ -215,8 +244,11 @@ class ProjectTreeTests(DatabaseTestCase):
         choose = functions["choose"]
         self.assertEqual(choose["header"], "def choose(value: bool) -> int:")
         self.assertEqual(
-            [(item["line"], item["code"]) for item in choose["return_lines"]],
-            [(5, "return 1"), (6, "return 2")],
+            [
+                (item["line"], item["code"], item["return_type"])
+                for item in choose["return_lines"]
+            ],
+            [(5, "return 1", "int"), (6, "return 2", "int")],
         )
         self.assertTrue(all(item["flow_dependent"] for item in choose["return_lines"]))
         self.assertNotIn("return 99", {item["code"] for item in choose["return_lines"]})
@@ -371,7 +403,14 @@ class ProjectTreeTests(DatabaseTestCase):
         self.assertEqual(javascript_function["header"], "function helper() {")
         self.assertEqual(
             javascript_function["return_lines"],
-            [{"line": 1, "code": "return 2;", "flow_dependent": False}],
+            [
+                {
+                    "line": 1,
+                    "code": "return 2;",
+                    "return_type": "int",
+                    "flow_dependent": False,
+                }
+            ],
         )
         with main.connect_db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 1)
