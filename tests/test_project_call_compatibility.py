@@ -125,6 +125,48 @@ class ProjectCallCompatibilityTests(DatabaseTestCase):
         self.assertIsNone(
             types_compatible(("tuple",), ("tuple[str, ...]",))
         )
+        self.assertTrue(
+            types_compatible(
+                ("FunctionAnalysisTask",),
+                ("object with attributes file_id, source",),
+            )
+        )
+
+    def test_python_flow_narrowing_slices_and_callable_aliases_are_inferred(self) -> None:
+        module = ast.parse(
+            "from typing import Callable\n"
+            "BatchRequest = Callable[..., dict[str, int]]\n"
+            "def review(node: ast.AST, candidates: list[Item], request: BatchRequest | None):\n"
+            "    if not isinstance(node, ast.Call):\n"
+            "        return\n"
+            "    target(node)\n"
+            "    target(candidates[:2])\n"
+            "    target(request)\n"
+            "def review_many(nodes: list[ast.AST]):\n"
+            "    for node in nodes:\n"
+            "        if not isinstance(node, ast.Raise):\n"
+            "            continue\n"
+            "        target(node)\n"
+            "def make_item() -> Item: ...\n"
+            "def review_optional(item: Item | None):\n"
+            "    with context():\n"
+            "        item = make_item()\n"
+            "    target(item)\n"
+        )
+
+        inferred = PythonAdapter._ast_argument_type_index(module)
+        calls = sorted([
+            node for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "target"
+        ], key=lambda node: node.lineno)
+
+        self.assertEqual(inferred[id(calls[0].args[0])], ("ast.Call",))
+        self.assertEqual(inferred[id(calls[1].args[0])], ("list[Item]",))
+        self.assertEqual(inferred[id(calls[2].args[0])], ("Callable", "None"))
+        self.assertEqual(inferred[id(calls[3].args[0])], ("ast.Raise",))
+        self.assertEqual(inferred[id(calls[4].args[0])], ("Item",))
 
     def test_python_tuple_literals_record_homogeneous_and_fixed_element_types(self) -> None:
         homogeneous = PythonAdapter._ast_literal_types(

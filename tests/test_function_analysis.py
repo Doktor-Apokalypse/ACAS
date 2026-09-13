@@ -23,6 +23,7 @@ from project_function_analysis import (
     load_function_analysis_task,
     merge_function_chunk_analyses,
     split_function_source,
+    store_cached_function_analysis,
 )
 from project_inventory import inventory_project_database
 from project_parsing import parse_project_database
@@ -398,6 +399,16 @@ class FunctionAnalysisContractTests(DatabaseTestCase):
                 "    return 'disabled'\n",
                 {"Return type does not match annotation"},
             ),
+            "fixture_generic_return_type_mismatch": (
+                "def fixture_generic_return_type_mismatch() -> dict[str, object]:\n"
+                "    return ['complete', 'model']\n",
+                {"Return type does not match annotation"},
+            ),
+            "fixture_builtin_return_type_mismatch": (
+                "def fixture_builtin_return_type_mismatch(compact: str) -> str:\n"
+                "    return len(compact)\n",
+                {"Return type does not match annotation"},
+            ),
             "fixture_broad_exception_swallowing": (
                 "def fixture_broad_exception_swallowing(payload: dict[str, object]) -> int:\n"
                 "    try:\n"
@@ -441,6 +452,36 @@ class FunctionAnalysisContractTests(DatabaseTestCase):
                 for issue in result.issues:
                     if issue.title in expected_titles:
                         self.assertEqual(issue.provenance, "deterministic")
+
+    def test_deterministic_return_check_respects_generic_compatibility_and_shadowing(self) -> None:
+        cases = (
+            "def compatible() -> list[str]:\n    return []\n",
+            "def shadowed(len) -> str:\n    return len('value')\n",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                task = project_function_analysis.FunctionAnalysisTask(
+                    symbol_id=1,
+                    project_id="p",
+                    user_id=1,
+                    file_id=1,
+                    file_path="returns.py",
+                    language="python",
+                    symbol_kind="function",
+                    qualified_name="example",
+                    start_line=1,
+                    end_line=source.count("\n"),
+                    source_sha256="0" * 64,
+                    function_sha256="1" * 64,
+                    source=source,
+                )
+
+                result = deterministic_python_contract(task, valid_result())
+
+                self.assertNotIn(
+                    "Return type does not match annotation",
+                    {issue.title for issue in result.issues},
+                )
 
     def test_deterministic_python_contract_respects_none_guards_and_safe_sql_fragments(self) -> None:
         source = (
@@ -3596,6 +3637,33 @@ class FunctionAnalysisPersistenceTests(DatabaseTestCase):
         self.assertEqual(issue_titles, [])
         self.assertEqual(cache_count, 0)
 
+    def test_partial_model_contract_is_stored_as_completed_analysis(self) -> None:
+        self.create_indexed_project(
+            b"def passthrough(value):\n    return value\n",
+            "partial-contract-project",
+        )
+        partial = valid_result().model_copy(
+            update={
+                "review_status": "partial",
+                "validation_notes": ["Unresolved parameter type: value"],
+            }
+        )
+
+        summary = analyze_project_functions(
+            main.connect_db,
+            "partial-contract-project",
+            analysis_request=lambda **_kwargs: partial,
+        )
+
+        with main.connect_db() as db:
+            symbol = db.execute(
+                "SELECT analysis_status, analysis_error FROM project_symbols "
+                "WHERE project_id = 'partial-contract-project'"
+            ).fetchone()
+        self.assertEqual(summary.status, "completed")
+        self.assertEqual((summary.completed_count, summary.failed_count), (1, 0))
+        self.assertEqual(tuple(symbol), ("completed", None))
+
     def test_changed_source_is_marked_stale_without_calling_ollama(self) -> None:
         content = b"def first(value):\n    return value\n"
         file_id = self.create_indexed_project(content, "stale-project")
@@ -3757,6 +3825,64 @@ class FunctionAnalysisPersistenceTests(DatabaseTestCase):
         self.assertEqual(target_issue_line["start_line"], 5)
         self.assertEqual(target_issue_line["provenance"], "cache")
         self.assertEqual(project_hits, 1)
+
+    def test_cache_preserves_deterministic_issue_provenance(self) -> None:
+        user_id = self.create_user("deterministic-cache-owner")
+        source = b"def wrong() -> dict:\n    return []\n"
+        self.create_indexed_project(
+            source,
+            "deterministic-cache-source",
+            user_id=user_id,
+        )
+        self.create_indexed_project(
+            source,
+            "deterministic-cache-target",
+            user_id=user_id,
+        )
+
+        with main.connect_db() as db:
+            source_symbol = db.execute(
+                "SELECT id FROM project_symbols WHERE project_id = 'deterministic-cache-source'"
+            ).fetchone()
+            source_task = load_function_analysis_task(db, int(source_symbol["id"]))
+            cached_result = valid_result().model_copy(
+                update={
+                    "issues": [
+                        FunctionIssue(
+                            severity="error",
+                            category="type",
+                            title="Return type contradicts annotation",
+                            description="The list return contradicts the dict annotation.",
+                            start_line=2,
+                            end_line=2,
+                            proof="source-v1",
+                            evidence="return []",
+                            failure_type="Return type mismatch",
+                            trigger="The function returns the list literal.",
+                            provenance="deterministic",
+                        )
+                    ]
+                }
+            )
+            store_cached_function_analysis(db, source_task, cached_result)
+        summary = analyze_project_functions(
+            main.connect_db,
+            "deterministic-cache-target",
+            analysis_request=lambda **_kwargs: self.fail("cache should satisfy the analysis"),
+        )
+
+        with main.connect_db() as db:
+            issues = db.execute(
+                """SELECT issue.title, issue.provenance
+                   FROM project_symbol_issues AS issue
+                   JOIN project_symbols AS symbol ON symbol.id = issue.symbol_id
+                   WHERE symbol.project_id = 'deterministic-cache-target'"""
+            ).fetchall()
+        self.assertEqual(summary.cache_hit_count, 1)
+        cached_issue = next(
+            row for row in issues if row["title"] == "Return type contradicts annotation"
+        )
+        self.assertEqual(cached_issue["provenance"], "deterministic")
 
     def test_cache_reuses_comment_only_function_changes_without_llm(self) -> None:
         user_id = self.create_user("semantic-cache-owner")

@@ -115,13 +115,13 @@ class PersistedQualityTests(DatabaseTestCase):
             "syntax_valid": False, "confidence": .99,
         })
         result = analyze_project_functions(main.connect_db, "analysis-project", analysis_request=lambda **kwargs: model)
-        self.assertEqual(result.failed_count, 1)
+        self.assertEqual((result.completed_count, result.failed_count), (1, 0))
         with main.connect_db() as db:
             row = db.execute("SELECT * FROM project_symbol_analyses").fetchone()
             self.assertEqual(row["syntax_valid"], 1)
             self.assertNotIn("does not compile", row["summary"])
             self.assertLessEqual(row["confidence"], .5)
-            quality = response_quality(row["response_json"], "failed")
+            quality = response_quality(row["response_json"], "completed")
             self.assertEqual(quality["status"], "partial")
             self.assertTrue(any("contradicted" in note for note in quality["notes"]))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM function_analysis_cache").fetchone()[0], 0)
@@ -158,7 +158,7 @@ class PersistedQualityTests(DatabaseTestCase):
         self.create_indexed_project(b"def answer(value):\n    return value\n")
         raw = valid_result(issue_line=2).model_dump(); raw["issues"][0]["guard_check"] = []
         result = analyze_project_functions(main.connect_db, "analysis-project", analysis_request=lambda **kwargs: analysis_engine.normalize_function_analysis_payload(json.dumps(raw)))
-        self.assertEqual(result.failed_count, 1)
+        self.assertEqual((result.completed_count, result.failed_count), (1, 0))
         with main.connect_db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM project_symbol_analyses").fetchone()[0], 1)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM function_analysis_cache").fetchone()[0], 0)

@@ -28,6 +28,7 @@ from app_config import (
     OLLAMA_MODEL,
 )
 from project_inventory import decode_text_content
+from project_call_compatibility import normalize_type, types_compatible
 from dependency_context import dependency_order, file_dependency_items, resolved_context_items, python_control_flow_items
 from deterministic_rules import javascript_null_member_issues, typescript_signature
 
@@ -156,7 +157,9 @@ def _result_with_issue_provenance(
     return result.model_copy(
         update={
             "issues": [
-                issue.model_copy(update={"provenance": provenance})
+                issue
+                if issue.provenance == "deterministic"
+                else issue.model_copy(update={"provenance": provenance})
                 for issue in result.issues
             ]
         }
@@ -2568,11 +2571,15 @@ def _literal_return_type(node: ast.AST) -> str | None:
     return None
 
 
-_STATIC_RETURN_CONSTRUCTOR_TYPES = {
+_STATIC_RETURN_CALL_TYPES = {
     "bool": "bool", "bytearray": "bytearray", "bytes": "bytes",
     "complex": "complex", "dict": "dict", "float": "float",
     "frozenset": "frozenset", "int": "int", "list": "list",
-    "set": "set", "str": "str", "tuple": "tuple",
+    "len": "int", "set": "set", "str": "str", "tuple": "tuple",
+}
+_STATIC_RETURN_CONTRACT_TYPES = {
+    "bool", "bytearray", "bytes", "complex", "dict", "float",
+    "frozenset", "int", "list", "null", "set", "string", "tuple",
 }
 
 
@@ -2585,7 +2592,7 @@ def _python_return_shadowed_names(
         context_module = ast.parse(analysis_context)
     except SyntaxError:
         # Without a parseable module slice, a global binding cannot be ruled out.
-        shadowed_names.update(_STATIC_RETURN_CONSTRUCTOR_TYPES)
+        shadowed_names.update(_STATIC_RETURN_CALL_TYPES)
     else:
         for statement in context_module.body:
             shadowed_names.update(_statement_bound_names(statement))
@@ -2618,9 +2625,9 @@ def _static_python_return_types(
             return list(parameter.accepted_types) or None
         return None
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        if (node.func.id in _STATIC_RETURN_CONSTRUCTOR_TYPES
+        if (node.func.id in _STATIC_RETURN_CALL_TYPES
                 and node.func.id not in (shadowed_names or set())):
-            return [_STATIC_RETURN_CONSTRUCTOR_TYPES[node.func.id]]
+            return [_STATIC_RETURN_CALL_TYPES[node.func.id]]
         return None
     if isinstance(node, ast.IfExp):
         branches = [
@@ -4397,19 +4404,33 @@ def _deterministic_python_issues(
                 )
 
     return_annotation = _annotation_text(function.returns)
-    if return_annotation:
+    if (
+        return_annotation
+        and normalize_type(return_annotation) in _STATIC_RETURN_CONTRACT_TYPES
+    ):
+        shadowed_names = _python_return_shadowed_names(
+            function, task.analysis_context
+        )
         for node in scope_nodes:
             if isinstance(node, ast.Return) and node.value is not None:
-                literal_type = _literal_return_type(node.value)
-                if literal_type and return_annotation in {"int", "str", "bool", "float"} and literal_type != return_annotation:
+                inferred_types = _static_python_return_types(
+                    node.value,
+                    [],
+                    task,
+                    shadowed_names=shadowed_names,
+                )
+                if inferred_types and types_compatible(
+                    tuple(inferred_types), (return_annotation,)
+                ) is False:
+                    actual_type = " | ".join(inferred_types)
                     add(
                         "error",
                         "type",
                         "Return type does not match annotation",
-                        f"Annotated return type is `{return_annotation}` but this path returns `{literal_type}`.",
+                        f"Annotated return type is `{return_annotation}` but this path returns `{actual_type}`.",
                         node,
                         failure_type="Return contract violation",
-                        trigger="Execution returns the evidenced literal value.",
+                        trigger="Execution returns the evidenced expression.",
                     )
 
     return issues
@@ -5370,8 +5391,8 @@ def persist_function_analysis(
         WHERE id = ?
         """,
         (
-            "completed" if result.review_status == "complete" else "failed",
-            None if result.review_status == "complete" else ("Incomplete model review: " + "; ".join(result.validation_notes))[:1_000],
+            "completed" if result.review_status in {"complete", "partial"} else "failed",
+            None if result.review_status in {"complete", "partial"} else ("Incomplete model review: " + "; ".join(result.validation_notes))[:1_000],
             task.symbol_id,
         ),
     )

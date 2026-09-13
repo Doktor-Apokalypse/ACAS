@@ -155,6 +155,8 @@ def _type_shapes(type_name: str) -> tuple[_TypeShape, ...]:
     value = type_name.strip()
     if not value:
         return ()
+    if re.match(r"(?i)^object\s+with\s+attributes\b", value):
+        return (_TypeShape("object"),)
     value = re.sub(r"(?i)\b(const|mutable|readonly|ref|out|in)\b", "", value).strip()
     optional_suffix = value.endswith("?")
     if optional_suffix:

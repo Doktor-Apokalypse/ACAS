@@ -630,6 +630,11 @@ class PythonAdapter(LanguageAdapter):
                 class_names,
                 current_class,
             )
+            if isinstance(node.slice, ast.Slice) or (
+                isinstance(node.slice, ast.Tuple)
+                and any(isinstance(item, ast.Slice) for item in node.slice.elts)
+            ):
+                return owner
             values: list[str] = []
             for type_name in owner:
                 compact = re.sub(r"\s+", "", type_name)
@@ -748,10 +753,34 @@ class PythonAdapter(LanguageAdapter):
             if candidates and all(candidate == candidates[0] for candidate in candidates)
         }
 
+        type_aliases: dict[str, tuple[str, ...]] = {}
+        for statement in module.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            alias_base = (
+                cls._ast_dotted_name(statement.value.value).rsplit(".", 1)[-1]
+                if isinstance(statement.value, ast.Subscript)
+                else cls._ast_dotted_name(statement.value).rsplit(".", 1)[-1]
+            )
+            if alias_base != "Callable":
+                continue
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    type_aliases[target.id] = ("Callable",)
+
+        def annotation_types(node: ast.AST | None) -> tuple[str, ...]:
+            if isinstance(node, ast.Name) and node.id in type_aliases:
+                return type_aliases[node.id]
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+                return cls._merge_inferred_types(
+                    annotation_types(node.left), annotation_types(node.right)
+                )
+            return cls._ast_annotation_type(node)
+
         module_environment: dict[str, tuple[str, ...]] = {}
         for statement in module.body:
             if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
-                annotation = cls._ast_annotation_type(statement.annotation)
+                annotation = annotation_types(statement.annotation)
                 if annotation:
                     module_environment[statement.target.id] = annotation
             elif isinstance(statement, ast.Assign):
@@ -797,15 +826,15 @@ class PythonAdapter(LanguageAdapter):
                 environment.setdefault("cls", (current_class,))
             args = function.args
             for argument in (*args.posonlyargs, *args.args, *args.kwonlyargs):
-                annotation = cls._ast_annotation_type(argument.annotation)
+                annotation = annotation_types(argument.annotation)
                 if annotation:
                     environment[argument.arg] = annotation
             if args.vararg is not None:
-                annotation = cls._ast_annotation_type(args.vararg.annotation)
+                annotation = annotation_types(args.vararg.annotation)
                 if annotation:
                     environment[args.vararg.arg] = (f"tuple[{annotation[0]}, ...]",)
             if args.kwarg is not None:
-                annotation = cls._ast_annotation_type(args.kwarg.annotation)
+                annotation = annotation_types(args.kwarg.annotation)
                 if annotation:
                     environment[args.kwarg.arg] = (f"dict[str, {annotation[0]}]",)
             base_environments[function] = environment
@@ -818,8 +847,6 @@ class PythonAdapter(LanguageAdapter):
             ast.While,
             ast.Try,
             ast.TryStar,
-            ast.With,
-            ast.AsyncWith,
             ast.Match,
             ast.match_case,
             ast.ExceptHandler,
@@ -905,6 +932,58 @@ class PythonAdapter(LanguageAdapter):
                 int(getattr(call, "col_offset", 0)),
             )
             call_path = control_path(call, scope)
+
+            def narrow_from_test(test: ast.AST, truthy: bool) -> None:
+                if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+                    narrow_from_test(test.operand, not truthy)
+                    return
+                if isinstance(test, ast.BoolOp) and (
+                    truthy and isinstance(test.op, ast.And)
+                    or not truthy and isinstance(test.op, ast.Or)
+                ):
+                    for value in test.values:
+                        narrow_from_test(value, truthy)
+                    return
+                if (
+                    isinstance(test, ast.Call)
+                    and isinstance(test.func, ast.Name)
+                    and test.func.id == "isinstance"
+                    and len(test.args) >= 2
+                    and isinstance(test.args[0], ast.Name)
+                ):
+                    if not truthy:
+                        return
+                    checked = test.args[1]
+                    nodes = checked.elts if isinstance(checked, ast.Tuple) else [checked]
+                    names = tuple(
+                        name for item in nodes
+                        if (name := cls._ast_dotted_name(item))
+                    )
+                    if names:
+                        environment[test.args[0].id] = names
+                    return
+                if (
+                    isinstance(test, ast.Compare)
+                    and len(test.ops) == len(test.comparators) == 1
+                    and isinstance(test.left, ast.Name)
+                    and isinstance(test.comparators[0], ast.Constant)
+                    and test.comparators[0].value is None
+                ):
+                    non_null = (
+                        truthy and isinstance(test.ops[0], ast.IsNot)
+                    ) or (
+                        not truthy and isinstance(test.ops[0], ast.Is)
+                    )
+                    if non_null:
+                        remaining = tuple(
+                            value for value in environment.get(test.left.id, ())
+                            if value.casefold() not in {"none", "nonetype", "null"}
+                        )
+                        if remaining:
+                            environment[test.left.id] = remaining
+                        else:
+                            environment.pop(test.left.id, None)
+
             for binding in binding_nodes(scope):
                 binding_position = (
                     int(getattr(binding, "lineno", 0)),
@@ -928,7 +1007,7 @@ class PythonAdapter(LanguageAdapter):
                 elif isinstance(binding, ast.AnnAssign) and isinstance(binding.target, ast.Name):
                     targets = [binding.target]
                     value = binding.value
-                    annotation = cls._ast_annotation_type(binding.annotation)
+                    annotation = annotation_types(binding.annotation)
                 elif isinstance(binding, ast.NamedExpr) and isinstance(binding.target, ast.Name):
                     targets = [binding.target]
                     value = binding.value
@@ -961,6 +1040,26 @@ class PythonAdapter(LanguageAdapter):
                 if inferred:
                     for target in targets:
                         environment[target.id] = inferred
+            current: ast.AST = call
+            while current is not scope:
+                parent_node = parents.get(current)
+                if parent_node is None:
+                    break
+                if isinstance(parent_node, ast.If):
+                    if current in parent_node.body:
+                        narrow_from_test(parent_node.test, True)
+                    elif current in parent_node.orelse:
+                        narrow_from_test(parent_node.test, False)
+                for _field, value in ast.iter_fields(parent_node):
+                    if not isinstance(value, list) or current not in value:
+                        continue
+                    for previous in value[: value.index(current)]:
+                        if not isinstance(previous, ast.If) or not previous.body:
+                            continue
+                        if isinstance(previous.body[-1], ast.Continue | ast.Return | ast.Raise):
+                            narrow_from_test(previous.test, False)
+                    break
+                current = parent_node
             return environment
 
         result: dict[int, tuple[str, ...]] = {}

@@ -14,7 +14,7 @@ TREE_HTML = r'''
     <h2 id="function-callers-title">Function callers</h2>
     <pre id="function-callers-header" class="function-callers-header"></pre>
     <p id="function-callers-summary" class="function-callers-summary" aria-live="polite"></p>
-    <div id="function-callers-list" class="function-callers-list"></div>
+    <ul id="function-callers-list" class="function-callers-list"></ul>
   </section>
 </div>
 '''
@@ -38,8 +38,8 @@ TREE_CSS = r'''
 .function-callers-backdrop{position:fixed;inset:0;z-index:170;display:grid;place-items:center;padding:18px;background:#020617b8}
 .function-callers-backdrop[hidden]{display:none}.function-callers-dialog{position:relative;width:min(760px,100%);max-height:min(760px,88dvh);overflow:auto;padding:22px;background:#171d28;color:#e5edf8;border:1px solid #64748b;border-radius:12px;box-shadow:0 18px 55px #000b}
 .function-callers-dialog h2{margin:0 42px 12px 0;font-size:20px}.message-form .function-callers-close{position:absolute;top:10px;right:12px;min-width:34px;padding:2px 9px;border:0;background:transparent;color:#cbd5e1;font-size:26px}
-.function-callers-header,.function-caller-code{margin:8px 0;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;color:#bae6fd;border:1px solid #334155;border-radius:7px;font-family:Consolas,"Courier New",monospace}
-.function-callers-summary{color:#cbd5e1}.function-callers-list{display:grid;gap:10px}.function-caller{padding:12px;background:#202735;border:1px solid #3b475a;border-radius:8px}.function-caller h3{margin:0 0 5px;font-size:14px}.function-caller-meta{margin:0;color:#aebbd0;font-size:12px}.function-caller-code{margin-bottom:0;color:#e2e8f0}
+.function-callers-header{margin:8px 0;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;color:#bae6fd;border:1px solid #334155;border-radius:7px;font-family:Consolas,"Courier New",monospace}
+.function-callers-summary{margin-bottom:0;color:#cbd5e1}.function-callers-list{margin:0;padding:0;border-top:1px solid #3b475a;list-style:none}.function-caller{padding:12px 2px;border-bottom:1px solid #3b475a;color:#e5edf8;font-size:14px;font-weight:700}
 .message-form{grid-template-rows:repeat(6,auto);grid-template-areas:'job job' 'projects projects' 'tree tree' 'status status' 'meta meta' 'input send'}
 @media(max-width:820px){.project-tree{max-height:20dvh}}
 
@@ -157,8 +157,8 @@ async function showFunctionCallers(project,item,row){
   try{
     const response=await fetch('/api/projects/'+encodeURIComponent(project.id)+'/functions/'+encodeURIComponent(item.id)+'/callers',{cache:'no-store'});if(redirectFor(response))return;const data=await readResponse(response);if(!response.ok)throw Error(errorText(data,response));if(functionCallers.hidden)return;
     functionCallersHeader.textContent=data.function?.header||item.header||item.qualified_name;
-    const callers=Array.isArray(data.callers)?data.callers:[];functionCallersSummary.textContent=callers.length?callers.length+' statically resolved call'+(callers.length===1?'':'s')+' in this project.':'No statically resolved project callers were found.';
-    for(const caller of callers){const card=document.createElement('article'),heading=document.createElement('h3'),meta=document.createElement('p'),code=document.createElement('pre');card.className='function-caller';heading.textContent=caller.caller_name||'Module-level code';meta.className='function-caller-meta';meta.textContent=caller.path+':'+caller.start_line+(caller.usage_kind&&caller.usage_kind!=='unknown'?' · '+caller.usage_kind:'');code.className='function-caller-code';code.textContent=caller.code||caller.callee;card.append(heading,meta,code);functionCallersList.append(card)}
+    const callers=Array.isArray(data.callers)?data.callers:[],callerLabels=[...new Set(callers.map(caller=>{const path=String(caller.path||'').replaceAll('\\','/'),fileName=path.split('/').pop(),callerName=caller.caller_name||'Module-level code';return (fileName?fileName+'/':'')+callerName}))];functionCallersSummary.textContent='Functions calling '+item.qualified_name+' ('+callerLabels.length+')';
+    for(const label of callerLabels){const row=document.createElement('li');row.className='function-caller';row.textContent=label;functionCallersList.append(row)}
   }catch(error){if(!functionCallers.hidden)functionCallersSummary.textContent='Could not load callers: '+error.message}
 }
 function showProjectTreeMenu(event,project,entry){
