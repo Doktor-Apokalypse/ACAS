@@ -26,6 +26,7 @@ from app_config import (
     FUNCTION_ANALYSIS_CONTEXT_CHARS,
     FUNCTION_ANALYSIS_MAX_SOURCE_CHARS,
     OLLAMA_MODEL,
+    current_ollama_model,
 )
 from project_inventory import decode_text_content
 from project_call_compatibility import normalize_type, types_compatible
@@ -57,6 +58,9 @@ class FunctionAnalysisTask:
     cache_function_sha256: str = ""
     semantic_cache_function_sha256: str = ""
     include_inferred_context: bool = False
+    enclosing_scope_names: tuple[str, ...] = ()
+    module_defined_names: tuple[str, ...] = ()
+    has_wildcard_import: bool = False
 
 
 @dataclass(frozen=True)
@@ -1766,7 +1770,7 @@ def _semantic_function_cache_sha256(language: str, source: str) -> str:
 
 
 _PYTHON_ANALYSIS_CONTEXT_VERSION = "multilanguage-dependency-slice-v4"
-_FUNCTION_ANALYSIS_CACHE_VERSION = "cache-v13-relative-semantic-lines"
+_FUNCTION_ANALYSIS_CACHE_VERSION = "cache-v15-module-and-annotation-precision"
 
 
 def _cache_contract_version() -> str:
@@ -2072,6 +2076,18 @@ def _python_module_context_index(
     return built
 
 
+def _python_module_has_wildcard_import(source_text: str) -> bool:
+    module = _parse_python_module_for_context(source_text)
+    return bool(
+        module is not None
+        and any(
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "*" for alias in node.names)
+            for node in module.body
+        )
+    )
+
+
 def _bounded_context(items: list[str], max_chars: int) -> str:
     selected: list[str] = []
     used = 0
@@ -2314,6 +2330,25 @@ def load_function_analysis_task(
         # Spend unused space on dependency items, retaining whole records.
         extras = [item for item in context_items if item not in dependency_context]
         analysis_context = _bounded_context([priority_context, declarations, *extras], FUNCTION_ANALYSIS_CONTEXT_CHARS)
+    module_defined_names: tuple[str, ...] = ()
+    has_wildcard_import = False
+    cache_context = analysis_context
+    if str(row["language"]) == "python":
+        module_defined_names = tuple(
+            sorted(
+                name
+                for name in _python_module_context_index(expected_hash, text)
+                if name != "*"
+            )
+        )
+        has_wildcard_import = _python_module_has_wildcard_import(text)
+        binding_fingerprint = hashlib.sha256(
+            json.dumps(
+                [module_defined_names, has_wildcard_import],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        cache_context += f"\n# deterministic-module-bindings: {binding_fingerprint}"
     return FunctionAnalysisTask(
         symbol_id=int(row["id"]),
         project_id=str(row["project_id"]),
@@ -2333,12 +2368,23 @@ def load_function_analysis_task(
         include_inferred_context=include_inferred,
         cache_function_sha256=_contextual_cache_sha256(
             function_sha256,
-            analysis_context,
+            cache_context,
         ),
         semantic_cache_function_sha256=_contextual_cache_sha256(
             semantic_function_sha256,
-            _semantic_analysis_context(analysis_context),
+            _semantic_analysis_context(cache_context),
         ),
+        enclosing_scope_names=(
+            _python_enclosing_scope_names(
+                text,
+                str(row["qualified_name"]),
+                int(row["start_line"]),
+            )
+            if str(row["language"]) == "python"
+            else ()
+        ),
+        module_defined_names=module_defined_names,
+        has_wildcard_import=has_wildcard_import,
     )
 
 
@@ -2515,6 +2561,8 @@ def _unique_strings(values: list[str], limit: int) -> list[str]:
 def _annotation_text(node: ast.AST | None) -> str | None:
     if node is None:
         return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.strip()
     try:
         return ast.unparse(node)
     except Exception:
@@ -2951,6 +2999,81 @@ def _attribute_access_is_guarded(
     return _name_is_guarded_before_statement(function.body, statement, name)
 
 
+def _expression_is_definitely_non_none(node: ast.AST) -> bool:
+    return (
+        isinstance(
+            node,
+            ast.Dict | ast.List | ast.Set | ast.Tuple | ast.Lambda | ast.JoinedStr,
+        )
+        or isinstance(node, ast.Constant) and node.value is not None
+        or isinstance(node, ast.Attribute | ast.Call)
+    )
+
+
+def _assignment_normalizes_optional_name(statement: ast.stmt, name: str) -> bool:
+    value: ast.AST | None = None
+    if isinstance(statement, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == name
+        for target in statement.targets
+    ):
+        value = statement.value
+    elif (
+        isinstance(statement, ast.AnnAssign)
+        and isinstance(statement.target, ast.Name)
+        and statement.target.id == name
+    ):
+        value = statement.value
+    if isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or):
+        return bool(value.values) and _expression_is_definitely_non_none(value.values[-1])
+    if (
+        isinstance(value, ast.IfExp)
+        and _test_rejects_none(value.test, name)
+        and isinstance(value.orelse, ast.Name)
+        and value.orelse.id == name
+    ):
+        return _expression_is_definitely_non_none(value.body)
+    return False
+
+
+def _optional_name_is_normalized_before_access(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    node: ast.Attribute,
+    name: str,
+    parents: dict[ast.AST, ast.AST],
+) -> bool:
+    statement = _enclosing_statement(node, parents)
+    if statement is None:
+        return False
+    child: ast.AST = statement
+    owner = parents.get(child)
+    while owner is not None:
+        body = getattr(owner, "body", None)
+        if isinstance(body, list):
+            containing = next(
+                (
+                    item
+                    for item in body
+                    if item is child or _node_contains(item, child)
+                ),
+                None,
+            )
+            if containing is not None and any(
+                _assignment_normalizes_optional_name(item, name)
+                for item in body[: body.index(containing)]
+            ):
+                return True
+        child = owner
+        owner = parents.get(owner)
+        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+            break
+    return any(
+        _assignment_normalizes_optional_name(item, name)
+        for item in function.body
+        if int(getattr(item, "lineno", 0) or 0)
+        < int(getattr(node, "lineno", 0) or 0)
+    )
+
+
 def _assignment_values(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> dict[str, list[ast.AST]]:
@@ -3319,6 +3442,24 @@ def _python_scope_bindings(
     return locals_, visitor.global_names, visitor.nonlocal_names
 
 
+def _truthy_named_expression_targets(node: ast.AST) -> set[str]:
+    """Return assignment-expression targets guaranteed when an expression is truthy."""
+    if isinstance(node, ast.NamedExpr):
+        return _target_names(node.target) | _truthy_named_expression_targets(node.value)
+    if isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            return set().union(
+                *(_truthy_named_expression_targets(value) for value in node.values)
+            )
+        return set()
+    if isinstance(node, ast.IfExp):
+        return set()
+    return set().union(
+        *(_truthy_named_expression_targets(child) for child in ast.iter_child_nodes(node)),
+        set(),
+    )
+
+
 class _PythonDefiniteAssignmentAnalyzer:
     """Forward, scope-aware definite-assignment analysis for one Python function."""
 
@@ -3427,6 +3568,9 @@ class _PythonDefiniteAssignmentAnalyzer:
                         condition,
                         comprehension_state,
                         shadowed=comprehension_names,
+                    )
+                    comprehension_state.update(
+                        _truthy_named_expression_targets(condition)
                     )
             if isinstance(node, ast.DictComp):
                 self._expression(node.key, comprehension_state, shadowed=comprehension_names)
@@ -3636,6 +3780,21 @@ class _PythonDefiniteAssignmentAnalyzer:
 
 def _python_context_defined_names(task: FunctionAnalysisTask) -> set[str]:
     names = set(_PYTHON_PREDEFINED_GLOBAL_NAMES) | set(_BUILTIN_NAMES)
+    names.update(task.enclosing_scope_names)
+    names.update(task.module_defined_names)
+    if task.has_wildcard_import:
+        # Star imports can provide any otherwise-unresolved global. Local names
+        # still go through Python's definite-assignment rules below.
+        try:
+            module = ast.parse(_parseable_python_fragment(task.source))
+        except (SyntaxError, ValueError, RecursionError):
+            module = None
+        if module is not None:
+            names.update(
+                node.id
+                for node in ast.walk(module)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            )
     names.add(task.qualified_name.rsplit(".", 1)[-1])
     names.update(_python_context_signatures(task.analysis_context))
     for match in re.finditer(
@@ -3656,6 +3815,47 @@ def _python_context_defined_names(task: FunctionAnalysisTask) -> set[str]:
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value.strip())
         )
     return names
+
+
+def _python_enclosing_scope_names(
+    source_text: str,
+    qualified_name: str,
+    start_line: int,
+) -> tuple[str, ...]:
+    """Return names available through enclosing Python function closures."""
+    try:
+        module = ast.parse(source_text)
+    except (SyntaxError, ValueError, RecursionError):
+        return ()
+    leaf = qualified_name.rsplit(".", 1)[-1]
+    candidates = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name == leaf
+        and int(getattr(node, "lineno", 0) or 0) <= start_line
+        and int(getattr(node, "end_lineno", 0) or 0) >= start_line
+    ]
+    if not candidates:
+        return ()
+    target = min(
+        candidates,
+        key=lambda node: int(getattr(node, "end_lineno", start_line) or start_line)
+        - int(getattr(node, "lineno", start_line) or start_line),
+    )
+    parents = {
+        child: parent
+        for parent in ast.walk(module)
+        for child in ast.iter_child_nodes(parent)
+    }
+    names: set[str] = set()
+    current = parents.get(target)
+    while current is not None:
+        if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef):
+            local_names, _global_names, _nonlocal_names = _python_scope_bindings(current)
+            names.update(local_names)
+        current = parents.get(current)
+    return tuple(sorted(names))
 
 
 def _minimum_length_proven_by_test(test: ast.AST, name: str) -> int | None:
@@ -4272,7 +4472,12 @@ def _deterministic_python_issues(
     for node in scope_nodes:
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             if node.value.id in optional_parameters:
-                if not _attribute_access_is_guarded(function, node, node.value.id, parents):
+                if not (
+                    _attribute_access_is_guarded(function, node, node.value.id, parents)
+                    or _optional_name_is_normalized_before_access(
+                        function, node, node.value.id, parents
+                    )
+                ):
                     add(
                         "unsafe",
                         "runtime",
@@ -4805,7 +5010,7 @@ def _cache_key(
         task.language,
         function_sha256 or task.cache_function_sha256 or task.function_sha256,
         _cache_contract_version(),
-        OLLAMA_MODEL,
+        current_ollama_model(OLLAMA_MODEL),
     )
 
 
@@ -5310,7 +5515,7 @@ def persist_function_analysis(
             task.project_id,
             task.file_id,
             result.contract_version,
-            OLLAMA_MODEL,
+            current_ollama_model(OLLAMA_MODEL),
             task.source_sha256,
             result.model_dump_json(),
             result.summary,
@@ -5986,9 +6191,11 @@ def analyze_project_functions(
         all_symbols = db.execute(
             """
             SELECT symbol.id, symbol.analysis_status, symbol.file_id,
-                   symbol.qualified_name, file.path
+                   symbol.qualified_name, file.path,
+                   json_extract(analysis.response_json, '$.review_status') AS review_status
             FROM project_symbols AS symbol
             JOIN project_files AS file ON file.id = symbol.file_id
+            LEFT JOIN project_symbol_analyses AS analysis ON analysis.symbol_id = symbol.id
             WHERE symbol.project_id = ?
               AND symbol.symbol_kind IN ('function', 'method')
             ORDER BY file.path COLLATE NOCASE, file.path, symbol.start_byte, symbol.id
@@ -6002,7 +6209,13 @@ def analyze_project_functions(
             if (
                 int(row["id"]) in requested_ids
                 if selected_symbol_ids is not None
-                else str(row["analysis_status"]) in statuses
+                else (
+                    str(row["analysis_status"]) in statuses
+                    or (
+                        retry_failed
+                        and str(row["review_status"] or "") != "complete"
+                    )
+                )
             )
         ]
         edges = [(int(row[0]), int(row[1])) for row in db.execute(

@@ -68,6 +68,24 @@ class DeterministicLanguageDetectionTests(DatabaseTestCase):
         self.assertTrue(by_path["assets/image.dat"].is_binary)
         self.assertIsNone(by_path["assets/image.dat"].language)
 
+    def test_extensionless_content_signature_is_classified_but_not_analyzed(self) -> None:
+        inventory = build_project_inventory(
+            [
+                source("notes/python notes", "def example():\n    return 1\n"),
+                source("tools/deploy", "#!/usr/bin/env python\nprint('ready')\n"),
+            ]
+        )
+        by_path = {item.path: item for item in inventory.files}
+
+        self.assertEqual(by_path["notes/python notes"].language, "python")
+        self.assertEqual(
+            by_path["notes/python notes"].detection_method,
+            "content_signature",
+        )
+        self.assertFalse(by_path["notes/python notes"].analysis_eligible)
+        self.assertEqual(by_path["tools/deploy"].detection_method, "shebang")
+        self.assertTrue(by_path["tools/deploy"].analysis_eligible)
+
     def test_ambiguous_headers_and_includes_use_project_context(self) -> None:
         cpp = build_project_inventory(
             [

@@ -288,9 +288,17 @@ reference list of all available settings.
 ### Using Lemonade Server
 
 Install Lemonade Server and a compatible local model, then set `OLLAMA_URL` to its server address
-and `OLLAMA_MODEL` to the exact installed model name. Lemonade models whose names end in `-Hybrid`
-use `/v1/chat/completions`; other model names use `/api/chat`. Skip `ollama pull` when Lemonade
-manages the model.
+and use `OLLAMA_MODEL` as the initial fallback model. Lemonade models whose names end in `-Hybrid`
+or `-ryzen-strix` use `/v1/chat/completions`; other model names use `/api/chat`. Skip `ollama pull`
+when Lemonade manages the model.
+
+Administrators can select a downloaded chat model from the **LLM** dropdown in the main WebUI.
+The application reads available models from Lemonade, asks Lemonade to load the selection, and
+stores the selection in the database so it survives application restarts. The dropdown shows which
+model is loaded and is locked while any analysis or chat job is queued or processing. Every job
+captures its selected model when queued, and model-specific function results, caches, and usage
+history remain separated. If no WebUI selection has been saved, the application uses
+`OLLAMA_MODEL`.
 
 ### Confirming the installation
 
@@ -299,7 +307,8 @@ While ACAS is running:
 - Open <http://127.0.0.1:8000/health> to confirm the web application and database are available.
 - Open <http://127.0.0.1:8000/ready> to confirm the database, job worker, model server, and
   configured model are ready.
-- The WebUI header shows the detected model.
+- The WebUI header shows the selected model. Administrators can change it there when no jobs are
+  active.
 - Stop ACAS with **Ctrl+C** in its terminal.
 
 ### Project uploads
@@ -373,7 +382,7 @@ names every invalid relationship instead of being silently clamped.
 | --- | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | HTTP bind address and port |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama server base URL |
-| `OLLAMA_MODEL` | `deepseek-coder-v2:16B` | Model used for chat and analysis |
+| `OLLAMA_MODEL` | `deepseek-coder-v2:16B` | Initial/fallback model until an administrator saves a WebUI selection |
 | `CHAT_DB_PATH` | `chat_memory.db` beside the code | SQLite database location |
 | `PUBLIC_BASE_URL` | empty | Canonical external HTTP(S) origin |
 | `TRUSTED_HOSTS` | local hosts | Additional comma-separated hostnames |

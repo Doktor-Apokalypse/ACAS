@@ -47,7 +47,7 @@ class MigrationBackupTests(unittest.TestCase):
         self.assertEqual(integrity, "ok")
 
         with closing(sqlite3.connect(self.database_path)) as upgraded:
-            self.assertEqual(upgraded.execute("PRAGMA user_version").fetchone()[0], 34)
+            self.assertEqual(upgraded.execute("PRAGMA user_version").fetchone()[0], 35)
             self.assertEqual(upgraded.execute("PRAGMA quick_check").fetchone()[0], "ok")
 
     def test_fresh_database_does_not_create_unnecessary_backup(self) -> None:

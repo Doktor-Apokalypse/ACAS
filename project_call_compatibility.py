@@ -7,7 +7,10 @@ import builtins
 import json
 import re
 import sqlite3
+import textwrap
 from dataclasses import dataclass
+
+from project_structure import resolve_project_calls
 
 
 @dataclass(frozen=True)
@@ -155,7 +158,17 @@ def _type_shapes(type_name: str) -> tuple[_TypeShape, ...]:
     value = type_name.strip()
     if not value:
         return ()
-    if re.match(r"(?i)^object\s+with\s+attributes\b", value):
+    # Forward references and postponed annotations may quote the complete type
+    # expression. Interpret that expression as a type here, rather than as a
+    # runtime string literal.
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        try:
+            decoded = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            decoded = None
+        if isinstance(decoded, str):
+            value = decoded.strip()
+    if re.match(r"(?i)^object\s+with\s+attributes?\b", value):
         return (_TypeShape("object"),)
     value = re.sub(r"(?i)\b(const|mutable|readonly|ref|out|in)\b", "", value).strip()
     optional_suffix = value.endswith("?")
@@ -854,8 +867,17 @@ def _check_return(
     call: sqlite3.Row,
     callee_analysis: sqlite3.Row,
     caller_return_types: tuple[str, ...],
+    *,
+    callee_is_async: bool = False,
+    call_is_awaited: bool = False,
+    source_usage_kind: str | None = None,
 ) -> tuple[str, list[Finding]]:
-    usage = str(call["usage_kind"])
+    usage = source_usage_kind or str(call["usage_kind"])
+    # Calling an async function produces a coroutine object. Its eventual
+    # return contract applies only once awaited; passing it to create_task or
+    # gather is therefore a valid value use.
+    if callee_is_async and not call_is_awaited:
+        return "compatible", []
     if usage == "statement":
         return "compatible", []
     may_return = bool(callee_analysis["may_return_value"])
@@ -885,6 +907,79 @@ def _check_return(
             actual_types=actual,
         )
     ]
+
+
+def _python_async_symbol_ids(
+    db: sqlite3.Connection,
+    project_id: str,
+) -> set[int]:
+    """Return Python symbol ids whose indexed source is an async definition."""
+    async_ids: set[int] = set()
+    for row in db.execute(
+        """
+        SELECT symbol.id, symbol.start_byte, symbol.end_byte, file.content
+        FROM project_symbols AS symbol
+        JOIN project_files AS file ON file.id = symbol.file_id
+        WHERE symbol.project_id = ? AND file.language = 'python'
+          AND symbol.symbol_kind IN ('function', 'method')
+        """,
+        (project_id,),
+    ).fetchall():
+        try:
+            content = bytes(row["content"])
+            source = content[int(row["start_byte"]):int(row["end_byte"])].decode("utf-8")
+            module = ast.parse(textwrap.dedent(source))
+        except (SyntaxError, UnicodeDecodeError, TypeError, ValueError):
+            continue
+        if any(isinstance(node, ast.AsyncFunctionDef) for node in module.body):
+            async_ids.add(int(row["id"]))
+    return async_ids
+
+
+def _python_call_source_contexts(
+    db: sqlite3.Connection,
+    project_id: str,
+) -> dict[tuple[int, int, int], tuple[bool, str]]:
+    """Return fresh await/value context for persisted Python call locations."""
+    contexts: dict[tuple[int, int, int], tuple[bool, str]] = {}
+
+    def usage_kind(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[bool, str]:
+        parent = parents.get(call)
+        awaited = isinstance(parent, ast.Await)
+        if awaited:
+            parent = parents.get(parent)
+        if isinstance(parent, ast.Expr):
+            return awaited, "statement"
+        if isinstance(parent, ast.Return):
+            return awaited, "return"
+        if isinstance(parent, ast.Assign | ast.AnnAssign | ast.NamedExpr):
+            return awaited, "assignment"
+        if isinstance(parent, ast.keyword | ast.Call):
+            return awaited, "argument"
+        if isinstance(parent, ast.If | ast.While | ast.IfExp):
+            return awaited, "condition"
+        return awaited, "value"
+
+    for row in db.execute(
+        "SELECT id, content FROM project_files WHERE project_id = ? AND language = 'python'",
+        (project_id,),
+    ).fetchall():
+        try:
+            module = ast.parse(bytes(row["content"]).decode("utf-8"))
+        except (SyntaxError, UnicodeDecodeError, TypeError):
+            continue
+        parents = {
+            child: parent
+            for parent in ast.walk(module)
+            for child in ast.iter_child_nodes(parent)
+        }
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call):
+                continue
+            contexts[
+                (int(row["id"]), int(node.lineno), int(node.col_offset) + 1)
+            ] = usage_kind(node, parents)
+    return contexts
 
 
 def _check_constructor_return(
@@ -923,6 +1018,9 @@ def check_project_call_compatibility(
     project_id: str,
 ) -> CompatibilitySummary:
     """Replace compatibility rows for a project using the latest stored contracts."""
+    # Re-resolve persisted calls so analyzer improvements also apply to projects
+    # imported before the current process started.
+    resolve_project_calls(db, project_id)
     db.execute(
         """
         DELETE FROM project_call_findings
@@ -959,6 +1057,8 @@ def check_project_call_compatibility(
         (project_id,),
     ).fetchall()
     python_scope_facts = _python_call_scope_facts(db, project_id)
+    python_async_symbol_ids = _python_async_symbol_ids(db, project_id)
+    python_call_source_contexts = _python_call_source_contexts(db, project_id)
     incompatible_count = unknown_count = not_checked_count = 0
     for call in calls:
         call_id = int(call["id"])
@@ -1017,10 +1117,24 @@ def check_project_call_compatibility(
                     caller_return_types,
                 )
             else:
+                source_call_context = python_call_source_contexts.get(
+                    (
+                        int(call["file_id"]),
+                        int(call["start_line"]),
+                        int(call["start_column"]),
+                    )
+                )
                 return_status, return_findings = _check_return(
                     call,
                     call,
                     caller_return_types,
+                    callee_is_async=int(call["resolved_symbol_id"]) in python_async_symbol_ids,
+                    call_is_awaited=bool(
+                        source_call_context and source_call_context[0]
+                    ),
+                    source_usage_kind=(
+                        source_call_context[1] if source_call_context else None
+                    ),
                 )
             findings.extend(argument_findings)
             findings.extend(return_findings)

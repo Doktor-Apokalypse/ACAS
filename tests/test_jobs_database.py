@@ -195,10 +195,11 @@ class JobAndDeletionTests(DatabaseTestCase):
                 (32, "editable_project_tree"),
                 (33, "function_output_budgets"),
                 (34, "function_tree_descriptions"),
+                (35, "runtime_model_selection"),
             ],
         )
         self.assertEqual(second, first)
-        self.assertEqual(user_version, 34)
+        self.assertEqual(user_version, 35)
 
 
 if __name__ == "__main__":

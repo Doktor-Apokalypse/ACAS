@@ -56,7 +56,7 @@ class AdminSystemHealthTests(DatabaseTestCase):
         self.assertEqual(report["checks"]["database"], "ok")
         self.assertTrue(report["jobs"]["worker_alive"])
         self.assertEqual(report["jobs"]["queued"], 0)
-        self.assertEqual(report["database"]["schema_version"], 34)
+        self.assertEqual(report["database"]["schema_version"], 35)
         self.assertTrue(report["registration"]["enabled"])
         self.assertTrue(report["ai_work"]["enabled"])
         self.assertIsNone(report["announcement"])

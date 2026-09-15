@@ -97,6 +97,10 @@ class AdminAiWorkSetting(BaseModel):
     enabled: bool
 
 
+class AdminModelSetting(BaseModel):
+    model_name: str = Field(min_length=1, max_length=300)
+
+
 class ProjectEntryDelete(BaseModel):
     kind: Literal["file", "folder", "upload"]
     file_id: int | None = Field(default=None, ge=1)

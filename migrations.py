@@ -1576,6 +1576,60 @@ def migration_034_function_tree_descriptions(db: sqlite3.Connection) -> None:
     )
 
 
+def migration_035_runtime_model_selection(db: sqlite3.Connection) -> None:
+    """Persist the selected model, capture it on jobs, and audit model changes."""
+    db.execute(
+        "INSERT OR IGNORE INTO application_settings(key, value, updated_at) "
+        "VALUES ('selected_model', '', 0)"
+    )
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(chat_jobs)")}
+    if "model_name" not in columns:
+        db.execute("ALTER TABLE chat_jobs ADD COLUMN model_name TEXT NOT NULL DEFAULT ''")
+
+    db.execute("ALTER TABLE admin_audit_events RENAME TO admin_audit_events_old")
+    db.execute(
+        """
+        CREATE TABLE admin_audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            actor_username TEXT NOT NULL,
+            target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            target_username TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(
+                action IN (
+                    'make_admin', 'remove_admin', 'ban', 'unban',
+                    'revoke_sessions', 'unlock', 'cancel_job', 'create_backup',
+                    'run_maintenance', 'set_registration', 'set_ai_work',
+                    'publish_announcement', 'clear_announcement',
+                    'send_password_reset', 'delete_account', 'anonymize_account',
+                    'set_user_limits', 'revoke_registration', 'run_integrity_check',
+                    'set_model'
+                )
+            ),
+            request_id TEXT NOT NULL,
+            details TEXT,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO admin_audit_events(
+            id, actor_user_id, actor_username, target_user_id, target_username,
+            action, request_id, details, created_at
+        )
+        SELECT id, actor_user_id, actor_username, target_user_id, target_username,
+               action, request_id, details, created_at
+        FROM admin_audit_events_old
+        """
+    )
+    db.execute("DROP TABLE admin_audit_events_old")
+    db.execute(
+        "CREATE INDEX admin_audit_events_newest "
+        "ON admin_audit_events(created_at DESC, id DESC)"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     (1, "core_schema", migration_001_core_schema),
     (2, "one_active_job_per_chat", migration_002_active_job_constraint),
@@ -1611,13 +1665,15 @@ MIGRATIONS: tuple[Migration, ...] = (
     (32, "editable_project_tree", migration_032_editable_project_tree),
     (33, "function_output_budgets", migration_033_function_output_budgets),
     (34, "function_tree_descriptions", migration_034_function_tree_descriptions),
+    (35, "runtime_model_selection", migration_035_runtime_model_selection),
 )
 
 # Earliest reliable UTC chronology available in this checkout. Versions 1-28
 # use their first recorded application time in the development database;
-# versions 29-31 and 34 use their implementation completion times. These are history markers,
+# versions 29-31 and 34-35 use their implementation completion times. These are history markers,
 # not public release dates.
 MIGRATION_RECORDED_AT_UTC: dict[int, str] = {
+    35: "2026-09-15 16:24:23 UTC",
     34: "2026-09-10 12:00:00 UTC",
     33: "2026-09-09 00:04:23 UTC",
     32: "2026-09-07 18:30:09 UTC",
@@ -1655,6 +1711,7 @@ MIGRATION_RECORDED_AT_UTC: dict[int, str] = {
 }
 
 MIGRATION_CHANGE_ACTIONS: dict[int, str] = {
+    35: "Added",
     34: "Added",
     33: "Added",
     32: "Added",

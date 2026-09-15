@@ -94,6 +94,15 @@ class MutationRecipe:
     expectation: BenchmarkExpectation
 
 
+@dataclass(frozen=True)
+class SeededErrorFixture:
+    """A clean project and its intentionally broken counterpart."""
+
+    clean_sources: dict[str, str]
+    mutated_sources: dict[str, str]
+    manifest: BenchmarkManifest
+
+
 def _normalized_path(value: str) -> str:
     return value.replace("\\", "/").lstrip("./").casefold()
 
@@ -159,8 +168,21 @@ def resolve_manifest_lines(
         if expectation.line is not None or not expectation.source_contains:
             resolved.append(expectation)
             continue
-        matches = [value for path, value in sources.items() if _path_matches(path, expectation.path)]
-        source = matches[0] if len(matches) == 1 else None
+        matches = [
+            (path, value)
+            for path, value in sources.items()
+            if _path_matches(path, expectation.path)
+        ]
+        exact_matches = [
+            value
+            for path, value in matches
+            if _normalized_path(path) == _normalized_path(expectation.path)
+        ]
+        source = (
+            exact_matches[0]
+            if len(exact_matches) == 1
+            else matches[0][1] if len(matches) == 1 else None
+        )
         line = (
             _line_for_occurrence(
                 source,
@@ -338,7 +360,7 @@ def load_project_observations(
     }
     function_rows = db.execute(
         f"""
-        SELECT issue.id, file.path, issue.start_line, issue.end_line,
+        SELECT issue.id, issue.symbol_id, file.path, issue.start_line, issue.end_line,
                issue.severity, issue.category, issue.title, issue.provenance,
                {optional['report_tier']}, {optional['evidence']},
                {optional['failure_type']}
@@ -350,6 +372,32 @@ def load_project_observations(
         """,
         (project_id,),
     ).fetchall()
+    call_rows = db.execute(
+        """
+        SELECT finding.id, call.caller_symbol_id, file.path,
+               call.start_line, call.end_line, finding.severity,
+               finding.finding_kind, finding.message
+        FROM project_call_findings AS finding
+        JOIN project_calls AS call ON call.id = finding.call_id
+        JOIN project_files AS file ON file.id = call.file_id
+        WHERE call.project_id = ?
+        ORDER BY finding.id
+        """,
+        (project_id,),
+    ).fetchall()
+    duplicate_call_kinds = {
+        (
+            int(row["caller_symbol_id"]),
+            int(row["start_line"]),
+            str(row["finding_kind"]),
+        )
+        for row in call_rows
+        if row["caller_symbol_id"] is not None
+    }
+    function_title_kinds = {
+        "Unexpected keyword argument": "unexpected_keyword",
+        "Missing required call arguments": "missing_argument",
+    }
     findings = [
         ObservedFinding(
             id=f"function:{int(row['id'])}",
@@ -378,19 +426,16 @@ def load_project_observations(
             ),
         )
         for row in function_rows
+        if (
+            function_title_kinds.get(str(row["title"])) is None
+            or row["start_line"] is None
+            or (
+                int(row["symbol_id"]),
+                int(row["start_line"]),
+                function_title_kinds[str(row["title"])],
+            ) not in duplicate_call_kinds
+        )
     ]
-    call_rows = db.execute(
-        """
-        SELECT finding.id, file.path, call.start_line, call.end_line,
-               finding.severity, finding.finding_kind, finding.message
-        FROM project_call_findings AS finding
-        JOIN project_calls AS call ON call.id = finding.call_id
-        JOIN project_files AS file ON file.id = call.file_id
-        WHERE call.project_id = ?
-        ORDER BY finding.id
-        """,
-        (project_id,),
-    ).fetchall()
     findings.extend(
         ObservedFinding(
             id=f"call:{int(row['id'])}",
@@ -601,6 +646,167 @@ def default_mutation_recipes() -> tuple[MutationRecipe, ...]:
     )
 
 
+def seeded_error_fixture() -> SeededErrorFixture:
+    """Return the eight-fault project used for end-to-end accuracy checks."""
+    clean_sources = {
+        "analysis_quality.py": (
+            "from collections import Counter\n\n"
+            "def response_quality(analysis_status: str) -> dict[str, object]:\n"
+            "    method = 'deterministic'\n"
+            "    if analysis_status == 'completed':\n"
+            "        return {\"status\": \"complete\", \"method\": method}\n"
+            "    return {'status': 'unknown', 'method': method}\n\n"
+            "def project_review_quality(rows: list[dict[str, str]]) -> dict[str, int]:\n"
+            "    methods: Counter[str] = Counter()\n"
+            "    for quality in rows:\n"
+            "        methods[str(quality[\"method\"])] += 1\n"
+            "    return dict(methods)\n"
+        ),
+        "ollama_budget.py": (
+            "def choose_analysis_context(input_estimate: int, output_tokens: int) -> int:\n"
+            "    safety_tokens = 32\n"
+            "    required = input_estimate + output_tokens + safety_tokens\n"
+            "    return required\n"
+        ),
+        "project_workspace.py": (
+            "def safe_project_name(value: str) -> str:\n"
+            "    return value.strip()\n\n"
+            "def clear_project_structure(db: object, project_id: str) -> None:\n"
+            "    return None\n\n"
+            "def store_upload_batch(db: object, upload_name: str) -> str:\n"
+            "    return safe_project_name(upload_name)\n\n"
+            "def rebuild_project(db: object, project_id: str) -> None:\n"
+            "    clear_project_structure(db, project_id)\n"
+        ),
+        "project_tree_metadata.py": (
+            "def compact_source_excerpt(compact: str) -> str:\n"
+            "    if len(compact) <= 80:\n"
+            "        return compact\n"
+            "    return compact[:77] + '...'\n\n"
+            "def function_source_metadata(packed: list[tuple[int, str, bool]]) -> list[dict[str, object]]:\n"
+            "    return [\n"
+            "        {'line': line, 'code': code, 'flow_dependent': flow_dependent}\n"
+            "        for line, code, flow_dependent in packed\n"
+            "    ]\n"
+        ),
+        "language_adapters/rust_adapter.py": (
+            "class Node:\n"
+            "    pass\n\n"
+            "class RustAdapter:\n"
+            "    def _usage(self, call: Node, source: bytes) -> tuple[str, tuple[str, ...]]:\n"
+            "        return 'unknown', ()\n"
+        ),
+    }
+    mutated_sources = dict(clean_sources)
+    mutated_sources["analysis_quality.py"] = clean_sources["analysis_quality.py"].replace(
+        "return {\"status\": \"complete\", \"method\": method}",
+        "return [\"complete\", method]",
+        1,
+    ).replace(
+        "methods[str(quality[\"method\"])] += 1",
+        "method_counts[str(quality[\"method\"])] += 1",
+        1,
+    )
+    mutated_sources["ollama_budget.py"] = clean_sources["ollama_budget.py"].replace(
+        "input_estimate + output_tokens", "input_estimtae + output_tokens", 1
+    )
+    mutated_sources["project_workspace.py"] = clean_sources["project_workspace.py"].replace(
+        "safe_project_name(upload_name)",
+        "safe_project_name(upload_name, allow_empty=True)",
+        1,
+    ).replace("clear_project_structure(db, project_id)", "clear_project_structure(db)", 1)
+    mutated_sources["project_tree_metadata.py"] = clean_sources["project_tree_metadata.py"].replace(
+        "return compact\n", "return len(compact)\n", 1
+    ).replace("in packed\n", "in packed_values\n", 1)
+    mutated_sources["language_adapters/rust_adapter.py"] = clean_sources[
+        "language_adapters/rust_adapter.py"
+    ].replace(") -> tuple[str, tuple[str, ...]]:\n", ") -> tuple[str, tuple[str, ...]]\n", 1)
+
+    expectations = (
+        BenchmarkExpectation(
+            "bad-response-quality-return", "analysis_quality.py",
+            source_contains="return [\"complete\", method]", category="type",
+            title_pattern="return type|annotation", allowed_severities=("error",),
+        ),
+        BenchmarkExpectation(
+            "undefined-method-counts", "analysis_quality.py",
+            source_contains="method_counts[str(quality[\"method\"])]", category="type",
+            title_pattern="undefined|assignment|NameError", allowed_severities=("error", "unsafe"),
+        ),
+        BenchmarkExpectation(
+            "undefined-input-estimate", "ollama_budget.py",
+            source_contains="input_estimtae + output_tokens", category="type",
+            title_pattern="undefined|assignment|NameError", allowed_severities=("error", "unsafe"),
+        ),
+        BenchmarkExpectation(
+            "unexpected-allow-empty", "project_workspace.py", analyzer="call",
+            source_contains="allow_empty=True", category="unexpected_keyword",
+            title_pattern="unexpected keyword", allowed_severities=("error",),
+        ),
+        BenchmarkExpectation(
+            "missing-project-id", "project_workspace.py", analyzer="call",
+            source_contains="clear_project_structure(db)", category="missing_argument",
+            title_pattern="missing|required argument", allowed_severities=("error",),
+        ),
+        BenchmarkExpectation(
+            "bad-compact-excerpt-return", "project_tree_metadata.py",
+            source_contains="return len(compact)", category="type",
+            title_pattern="return type|annotation", allowed_severities=("error",),
+        ),
+        BenchmarkExpectation(
+            "undefined-packed-values", "project_tree_metadata.py",
+            source_contains="in packed_values", category="type",
+            title_pattern="undefined|assignment|NameError", allowed_severities=("error", "unsafe"),
+        ),
+        BenchmarkExpectation(
+            "rust-adapter-syntax", "language_adapters/rust_adapter.py", analyzer="parser",
+            source_contains="def _usage(self, call: Node, source: bytes) -> tuple[str, tuple[str, ...]]",
+            category="syntax", title_pattern="parser|syntax", allowed_severities=("error",),
+        ),
+    )
+    clean_regions = tuple(
+        CleanRegion(f"clean-{path}", f"clean/{path}", source.splitlines()[0])
+        for path, source in clean_sources.items()
+    )
+    return SeededErrorFixture(
+        clean_sources=clean_sources,
+        mutated_sources=mutated_sources,
+        manifest=BenchmarkManifest(
+            "Eight intentionally introduced project errors",
+            expectations,
+            clean_regions,
+        ),
+    )
+
+
+def materialize_seeded_error_corpus(destination: str | Path) -> Path:
+    """Write the controlled eight-error benchmark and its clean controls."""
+    root = Path(destination)
+    fixture = seeded_error_fixture()
+    for prefix, sources in (
+        (Path("clean"), fixture.clean_sources),
+        (Path(), fixture.mutated_sources),
+    ):
+        for relative_path, source in sources.items():
+            output = root / prefix / relative_path
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(source, encoding="utf-8")
+    manifest_path = root / "benchmark_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "name": fixture.manifest.name,
+                "expected": [asdict(item) for item in fixture.manifest.expectations],
+                "clean_regions": [asdict(item) for item in fixture.manifest.clean_regions],
+            },
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
 def materialize_mutation_corpus(destination: str | Path) -> Path:
     """Create a deterministic multi-language clean/mutated benchmark project."""
     root = Path(destination)
@@ -649,6 +855,11 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     generate = subparsers.add_parser("generate", help="Create the mutation corpus")
     generate.add_argument("destination", type=Path)
+    generate_seeded = subparsers.add_parser(
+        "generate-seeded",
+        help="Create the controlled eight-error regression corpus",
+    )
+    generate_seeded.add_argument("destination", type=Path)
     evaluate = subparsers.add_parser("evaluate", help="Score a persisted project report")
     evaluate.add_argument("database", type=Path)
     evaluate.add_argument("project_id")
@@ -660,6 +871,9 @@ def main() -> int:
     arguments = parser.parse_args()
     if arguments.command == "generate":
         print(materialize_mutation_corpus(arguments.destination))
+        return 0
+    if arguments.command == "generate-seeded":
+        print(materialize_seeded_error_corpus(arguments.destination))
         return 0
     db = sqlite3.connect(arguments.database.resolve().as_uri() + "?mode=ro", uri=True)
     db.row_factory = sqlite3.Row

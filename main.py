@@ -20,6 +20,7 @@ PUBLIC_BASE_URL is set automatically when this script starts its own ngrok tunne
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import csv
@@ -37,6 +38,7 @@ import sqlite3
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Iterator
@@ -67,6 +69,7 @@ from api_models import (
     AdminAccountDisposition,
     AdminAnnouncementSetting,
     AdminAiWorkSetting,
+    AdminModelSetting,
     AdminRegistrationSetting,
     AdminUserAction,
     AdminUserLimits,
@@ -171,6 +174,7 @@ from app_config import (
     OWNER_EMAIL,
     SYSTEM_PROMPT,
     validate_application_configuration,
+    use_ollama_model,
 )
 from authentication import (
     hash_password,
@@ -183,11 +187,13 @@ from authentication import (
 )
 from project_workspace import owned_project, store_upload_batch, validate_append, rebuild_project, entry_file_ids
 from project_uploads import (
+    GitHubImportUnavailable,
     ProjectUploadError,
     ProjectUploadTooLarge,
     UploadLimits,
     decode_relative_paths,
     ingest_folder,
+    ingest_github_repository,
     ingest_files,
     ingest_zip,
     safe_project_name,
@@ -1349,6 +1355,18 @@ def ai_work_is_enabled(db: sqlite3.Connection | None = None) -> bool:
     return row is None or row["value"] == "1"
 
 
+def selected_ollama_model(db: sqlite3.Connection | None = None) -> str:
+    """Return the administrator selection, falling back to the startup setting."""
+    if db is None:
+        with connect_db() as connection:
+            return selected_ollama_model(connection)
+    row = db.execute(
+        "SELECT value FROM application_settings WHERE key = 'selected_model'"
+    ).fetchone()
+    selected = str(row["value"] or "").strip() if row is not None else ""
+    return selected or OLLAMA_MODEL
+
+
 def require_ai_work_enabled(db: sqlite3.Connection | None = None) -> None:
     if not ai_work_is_enabled(db):
         raise HTTPException(
@@ -1901,9 +1919,24 @@ def home(request: Request) -> Response:
         return secure_html_response(request, FORBIDDEN_HTML, status_code=403)
     admin_link = '<a class="admin-link" href="/admin">Administration</a>' if user["is_admin"] else ""
     account_links = admin_link + '<a href="/changelog">Changelog</a>'
+    with connect_db() as db:
+        selected_model = selected_ollama_model(db)
+    if user["is_admin"]:
+        model_control = (
+            '<label class="model-selector-label" for="model-selector">LLM:</label>'
+            '<select id="model-selector" class="model-selector" '
+            'aria-label="Model used for new LLM requests" disabled>'
+            f'<option>{html.escape(selected_model)}</option></select>'
+            '<span id="model-status" class="model-status" role="status">Loading models...</span>'
+        )
+    else:
+        model_control = (
+            '<span class="model-badge" title="Model selected for new LLM requests">'
+            f'LLM: <strong>{html.escape(selected_model)}</strong></span>'
+        )
     page = HTML.replace("{{USERNAME}}", html.escape(user["username"]))
     page = page.replace("{{ADMIN_LINK}}", account_links)
-    page = page.replace("{{OLLAMA_MODEL}}", html.escape(OLLAMA_MODEL))
+    page = page.replace("{{MODEL_CONTROL}}", model_control)
     page = page.replace("{{DIRECT_MESSAGE_CHARS}}", str(DIRECT_MESSAGE_CHARS))
     page = page.replace("{{MAX_MESSAGE_CHARS}}", str(MAX_MESSAGE_CHARS))
     return secure_html_response(request, page, headers={"Cache-Control": "no-store"})
@@ -2059,11 +2092,95 @@ def installed_ollama_models() -> set[str]:
     return names
 
 
-def configured_ollama_model_is_installed(models: set[str]) -> bool:
-    configured = OLLAMA_MODEL.strip().casefold()
+def configured_ollama_model_is_installed(
+    models: set[str], model_name: str | None = None
+) -> bool:
+    configured = (model_name or selected_ollama_model()).strip().casefold()
     if configured in models:
         return True
     return ":" not in configured and f"{configured}:latest" in models
+
+
+def _bounded_json_request(
+    path: str,
+    *,
+    data: dict[str, object] | None = None,
+    timeout: float | None = None,
+) -> object:
+    encoded = json.dumps(data).encode("utf-8") if data is not None else None
+    request = urllib.request.Request(
+        f"{OLLAMA_URL.rstrip('/')}{path}",
+        data=encoded,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST" if data is not None else "GET",
+    )
+    with urllib.request.urlopen(
+        request,
+        timeout=timeout or READINESS_OLLAMA_TIMEOUT_SECONDS,
+    ) as response:
+        raw_payload = response.read(1_000_001)
+    if len(raw_payload) > 1_000_000:
+        raise RuntimeError("Model-service response exceeded 1 MB")
+    return json.loads(raw_payload)
+
+
+def model_service_state() -> dict[str, object]:
+    """Return downloaded chat models plus Lemonade's currently loaded model."""
+    try:
+        payload = _bounded_json_request("/v1/models")
+        health = _bounded_json_request("/v1/health")
+        entries = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(entries, list) or not isinstance(health, dict):
+            raise RuntimeError("Lemonade returned invalid model state")
+        models: list[dict[str, object]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("id")
+            labels = entry.get("labels")
+            label_values = {
+                str(value).casefold() for value in labels
+            } if isinstance(labels, list) else set()
+            if (
+                isinstance(name, str)
+                and name.strip()
+                and entry.get("downloaded", True) is not False
+                and (not label_values or label_values.intersection({"chat", "coding"}))
+            ):
+                models.append(
+                    {
+                        "name": name.strip(),
+                        "recipe": str(entry.get("recipe") or ""),
+                        "context_length": entry.get("context_length"),
+                    }
+                )
+        models.sort(key=lambda item: str(item["name"]).casefold())
+        loaded = health.get("model_loaded")
+        return {
+            "service": "lemonade",
+            "models": models,
+            "loaded_model": loaded.strip() if isinstance(loaded, str) else None,
+        }
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    names = sorted(installed_ollama_models())
+    return {
+        "service": "ollama",
+        "models": [{"name": name, "recipe": "", "context_length": None} for name in names],
+        "loaded_model": None,
+    }
+
+
+def load_lemonade_model(model_name: str) -> None:
+    payload = _bounded_json_request(
+        "/v1/load",
+        data={"model_name": model_name},
+        timeout=OLLAMA_SOCKET_TIMEOUT,
+    )
+    if not isinstance(payload, dict) or payload.get("status") not in {None, "success"}:
+        message = payload.get("message") if isinstance(payload, dict) else None
+        raise RuntimeError(str(message or "Lemonade did not confirm that the model loaded"))
 
 
 def build_readiness_report() -> dict[str, object]:
@@ -2089,8 +2206,11 @@ def build_readiness_report() -> dict[str, object]:
     try:
         models = installed_ollama_models()
         checks["ollama"] = "ok"
+        selected_model = selected_ollama_model()
         checks["configured_model"] = (
-            "ok" if configured_ollama_model_is_installed(models) else "unavailable"
+            "ok"
+            if configured_ollama_model_is_installed(models, selected_model)
+            else "unavailable"
         )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
         checks["ollama"] = "unavailable"
@@ -2804,9 +2924,10 @@ def enforce_project_storage_limit(
 async def upload_project(
     request: Request,
     chat_id: Annotated[str, Form(min_length=1, max_length=100)],
-    source_kind: Annotated[Literal["zip", "folder", "files"], Form()],
-    files: Annotated[list[UploadFile], File()],
+    source_kind: Annotated[Literal["zip", "folder", "files", "github"], Form()],
+    files: Annotated[list[UploadFile] | None, File()] = None,
     relative_paths: Annotated[str, Form()] = "[]",
+    repository_url: Annotated[str | None, Form(max_length=2048)] = None,
     project_id: Annotated[str | None, Form(max_length=100)] = None,
     project_name: Annotated[str | None, Form(max_length=200)] = None,
 ) -> dict[str, object]:
@@ -2820,33 +2941,49 @@ async def upload_project(
     if owned_chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     target_project_id = project_id
-    upload_name = files[0].filename if source_kind == "zip" and files else None
+    uploads = files or []
+    upload_name = uploads[0].filename if source_kind == "zip" and uploads else None
     try:
-        if source_kind == "zip":
-            if len(files) != 1:
+        if source_kind == "github":
+            if uploads:
+                raise ProjectUploadError("GitHub repository imports do not accept uploaded files")
+            if not repository_url:
+                raise ProjectUploadError("Enter a public GitHub repository URL")
+            bundle = await asyncio.to_thread(
+                ingest_github_repository,
+                repository_url,
+                PROJECT_UPLOAD_LIMITS,
+            )
+            upload_name = f"{bundle.name} (GitHub)"
+        elif repository_url:
+            raise ProjectUploadError("A repository URL is only valid for a GitHub import")
+        elif source_kind == "zip":
+            if len(uploads) != 1:
                 raise ProjectUploadError("Select exactly one ZIP file")
             bundle = ingest_zip(
-                files[0].file,
-                files[0].filename or "Uploaded project.zip",
+                uploads[0].file,
+                uploads[0].filename or "Uploaded project.zip",
                 PROJECT_UPLOAD_LIMITS,
             )
         elif source_kind == "files":
             bundle = ingest_files(
-                [(upload.filename or "", upload.file) for upload in files],
+                [(upload.filename or "", upload.file) for upload in uploads],
                 PROJECT_UPLOAD_LIMITS,
             )
         else:
-            paths = decode_relative_paths(relative_paths, len(files))
+            paths = decode_relative_paths(relative_paths, len(uploads))
             bundle = ingest_folder(
-                [(path, upload.file) for path, upload in zip(paths, files)],
+                [(path, upload.file) for path, upload in zip(paths, uploads)],
                 PROJECT_UPLOAD_LIMITS,
             )
+    except GitHubImportUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ProjectUploadTooLarge as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ProjectUploadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
-        for upload in files:
+        for upload in uploads:
             await upload.close()
 
     project_id = target_project_id or str(uuid.uuid4())
@@ -2879,7 +3016,14 @@ async def upload_project(
                     len(bundle.files), bundle.skipped_files, bundle.total_bytes,
                 ),
             )
-        store_upload_batch(db, project_id, bundle, source_kind, upload_name or bundle.name)
+        stored_source_kind = "folder" if source_kind == "github" else source_kind
+        store_upload_batch(
+            db,
+            project_id,
+            bundle,
+            stored_source_kind,
+            upload_name or bundle.name,
+        )
         if target_project_id:
             rebuild_project(db, project_id)
             return project_response(db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone())
@@ -3336,7 +3480,11 @@ def build_project_source_integrity_report(
             "path": path,
             "stored_sha256": stored_sha256,
             "stored_size_bytes": int(row["size_bytes"] or 0),
-            "workspace_status": "not_found",
+            "workspace_status": "not_linked",
+            "workspace_note": (
+                "Stored upload hash is available; no linked workspace file was found "
+                "for a live comparison."
+            ),
         }
         for candidate in _workspace_file_candidates(
             path,
@@ -3354,6 +3502,7 @@ def build_project_source_integrity_report(
                         "warning": f"Workspace file could not be read: {type(exc).__name__}",
                     }
                 )
+                entry.pop("workspace_note", None)
                 warning_count += 1
                 break
             checked_count += 1
@@ -3371,6 +3520,7 @@ def build_project_source_integrity_report(
                     "workspace_size_bytes": len(content),
                 }
             )
+            entry.pop("workspace_note", None)
             if not matched:
                 entry["warning"] = (
                     "Stored analysis source differs from the matching workspace file. "
@@ -3383,7 +3533,7 @@ def build_project_source_integrity_report(
     elif checked_count and checked_count == matched_count:
         status = "matched"
     else:
-        status = "unknown"
+        status = "stored_only"
     return {
         "status": status,
         "checked_file_count": checked_count,
@@ -3452,6 +3602,25 @@ def get_project_analysis_report(
         advisories_by_symbol: dict[int, list[dict[str, object]]] = {}
         if function_ids:
             placeholders = ",".join("?" for _ in function_ids)
+            call_finding_kinds = {
+                (
+                    int(row["caller_symbol_id"]),
+                    int(row["start_line"]),
+                    str(row["finding_kind"]),
+                )
+                for row in db.execute(
+                    f"""
+                    SELECT DISTINCT call.caller_symbol_id, call.start_line,
+                                    finding.finding_kind
+                    FROM project_call_findings AS finding
+                    JOIN project_calls AS call ON call.id = finding.call_id
+                    WHERE call.project_id = ?
+                      AND call.caller_symbol_id IN ({placeholders})
+                    """,
+                    [project_id, *function_ids],
+                ).fetchall()
+                if row["caller_symbol_id"] is not None
+            }
             for row in db.execute(
                 f"""
                 SELECT symbol_id, ordinal, name, parameter_kind, required,
@@ -3492,6 +3661,20 @@ def get_project_analysis_report(
             ).fetchall():
                 value = dict(row)
                 symbol_id = int(value.pop("symbol_id"))
+                duplicate_call_kind = {
+                    "Unexpected keyword argument": "unexpected_keyword",
+                    "Missing required call arguments": "missing_argument",
+                }.get(str(value.get("title") or ""))
+                if (
+                    duplicate_call_kind is not None
+                    and value.get("start_line") is not None
+                    and (
+                        symbol_id,
+                        int(value["start_line"]),
+                        duplicate_call_kind,
+                    ) in call_finding_kinds
+                ):
+                    continue
                 if value.get("report_tier") == "advisory":
                     advisories_by_symbol.setdefault(symbol_id, []).append(value)
                 else:
@@ -3680,9 +3863,9 @@ def _queue_project_analysis_job(
             INSERT INTO chat_jobs(
                 id, user_id, chat_id, project_id, project_retry_failed,
                 project_symbol_id,
-                input_char_count, mode, job_kind, status, progress_stage,
+                input_char_count, model_name, mode, job_kind, status, progress_stage,
                 progress_total, progress_file_total, started_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'project', 'project_analysis',
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'project', 'project_analysis',
                       'queued', 'queued', ?, ?, ?)
             """,
             (
@@ -3693,6 +3876,7 @@ def _queue_project_analysis_job(
                 int(payload.retry_failed or project_symbol_id is not None),
                 project_symbol_id,
                 input_char_count,
+                selected_ollama_model(db),
                 symbol_count,
                 int(target["file_count"]),
                 int(time.time()),
@@ -4406,9 +4590,9 @@ def retry_chat_verification(
             """
             INSERT INTO chat_jobs(
                 id, user_id, chat_id, mode, job_kind, user_message_id, reply_message_id,
-                status, progress_stage, started_at
+                model_name, status, progress_stage, started_at
             )
-            VALUES (?, ?, ?, 'analyse', 'verification_retry', ?, ?, 'queued', 'verifying', ?)
+            VALUES (?, ?, ?, 'analyse', 'verification_retry', ?, ?, ?, 'queued', 'verifying', ?)
             """,
             (
                 job_id,
@@ -4416,6 +4600,7 @@ def retry_chat_verification(
                 chat_id,
                 int(source_message["id"]),
                 reply_message_id,
+                selected_ollama_model(db),
                 int(time.time()),
             ),
             int(user["id"]),
@@ -4589,6 +4774,7 @@ ADMIN_AUDIT_ACTIONS = frozenset(
         "set_user_limits",
         "revoke_registration",
         "run_integrity_check",
+        "set_model",
     }
 )
 
@@ -5339,6 +5525,139 @@ def set_admin_ai_work(
     }
 
 
+@app.get("/api/models")
+def available_models(request: Request) -> dict[str, object]:
+    """Expose the selected and locally available chat models to signed-in users."""
+    actor = require_user(request)
+    with connect_db() as db:
+        selected = selected_ollama_model(db)
+        active_jobs = int(
+            db.execute(
+                "SELECT COUNT(*) FROM chat_jobs WHERE status IN ('queued', 'processing')"
+            ).fetchone()[0]
+        )
+    try:
+        state = model_service_state()
+        error = None
+    except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        LOGGER.warning("Could not read model-service state: %s", exc)
+        state = {
+            "service": "unavailable",
+            "models": [{"name": selected, "recipe": "", "context_length": None}],
+            "loaded_model": None,
+        }
+        error = str(exc)
+    return {
+        **state,
+        "selected_model": selected,
+        "fallback_model": OLLAMA_MODEL,
+        "can_change": bool(actor["is_admin"]) and active_jobs == 0 and error is None,
+        "active_jobs": active_jobs,
+        "error": error,
+    }
+
+
+@app.patch("/api/admin/settings/model")
+def set_admin_model(
+    payload: AdminModelSetting, request: Request
+) -> dict[str, object]:
+    """Load and persist an available model for all subsequently queued work."""
+    global READINESS_CACHE
+    actor = require_admin(request)
+    requested = payload.model_name.strip()
+    try:
+        state = model_service_state()
+    except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not query the model service: {exc}",
+        ) from exc
+    models = {
+        str(item["name"]).casefold(): str(item["name"])
+        for item in state["models"]
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    canonical_name = models.get(requested.casefold())
+    if canonical_name is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Select a downloaded chat model advertised by the model service",
+        )
+    with connect_db() as db:
+        active_jobs = int(
+            db.execute(
+                "SELECT COUNT(*) FROM chat_jobs WHERE status IN ('queued', 'processing')"
+            ).fetchone()[0]
+        )
+    if active_jobs:
+        raise HTTPException(
+            status_code=409,
+            detail="Wait for all queued and processing jobs to finish before changing models",
+        )
+    loaded_model = state.get("loaded_model")
+    if (
+        state.get("service") == "lemonade"
+        and str(loaded_model or "").casefold() != canonical_name.casefold()
+    ):
+        try:
+            load_lemonade_model(canonical_name)
+        except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Lemonade could not load the selected model: {exc}",
+            ) from exc
+    request_id = getattr(request.state, "request_id", None) or request_id_from_header(None)
+    changed = False
+    previous = ""
+    with connect_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        active_jobs = int(
+            db.execute(
+                "SELECT COUNT(*) FROM chat_jobs WHERE status IN ('queued', 'processing')"
+            ).fetchone()[0]
+        )
+        if active_jobs:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A job was queued while Lemonade loaded the model. Wait for it to "
+                    "finish, then select the model again"
+                ),
+            )
+        previous = selected_ollama_model(db)
+        if previous.casefold() != canonical_name.casefold():
+            db.execute(
+                """
+                INSERT INTO application_settings(
+                    key, value, updated_at, updated_by_user_id
+                ) VALUES ('selected_model', ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at,
+                    updated_by_user_id = excluded.updated_by_user_id
+                """,
+                (canonical_name, int(time.time()), actor["id"]),
+            )
+            record_admin_audit_event(
+                db,
+                actor,
+                actor,
+                "set_model",
+                request_id,
+                details={"previous_model": previous, "model_name": canonical_name},
+            )
+            changed = True
+    with READINESS_CACHE_LOCK:
+        READINESS_CACHE = None
+    return {
+        "message": f"Selected model {canonical_name}",
+        "selected_model": canonical_name,
+        "loaded_model": canonical_name if state.get("service") == "lemonade" else None,
+        "previous_model": previous,
+        "changed": changed,
+    }
+
+
 @app.put("/api/admin/announcement")
 def publish_admin_announcement(
     payload: AdminAnnouncementSetting, request: Request
@@ -5509,7 +5828,7 @@ def admin_system_health(request: Request) -> dict[str, object]:
         "started_at": PROCESS_STARTED_AT,
         "uptime_seconds": max(0, int(time.monotonic() - PROCESS_STARTED_MONOTONIC)),
         "checks": dict(readiness_report["checks"]),
-        "model": OLLAMA_MODEL,
+        "model": selected_ollama_model(),
         "registration": {"enabled": registration_enabled},
         "ai_work": {"enabled": ai_work_enabled},
         "announcement": announcement,
@@ -6028,6 +6347,17 @@ def record_chat_job_progress(
             """,
             (started_at, stage, current, total, json.dumps(events[-200:]), job_id),
         )
+        if stage in {"completed", "review_incomplete", "cancelled", "failed"}:
+            db.execute(
+                """
+                UPDATE chat_jobs
+                SET progress_file_path = NULL, progress_symbol_name = NULL,
+                    progress_file_current = 0, progress_file_total = 0,
+                    progress_function_current = 0, progress_function_total = 0
+                WHERE id = ?
+                """,
+                (job_id,),
+            )
     else:
         db.execute(
             """
@@ -6294,13 +6624,17 @@ def process_chat_job(job_id: str, cancel_event: threading.Event) -> None:
     LOGGER.info("Ollama worker is starting chat job %s", job_id)
     with connect_db() as db:
         job = db.execute(
-            "SELECT job_kind FROM chat_jobs WHERE id = ?",
+            "SELECT job_kind, model_name FROM chat_jobs WHERE id = ?",
             (job_id,),
         ).fetchone()
-    if job is not None and job["job_kind"] == "project_analysis":
-        process_project_analysis_job(job_id, cancel_event)
-    else:
-        process_active_chat_job(job_id, cancel_event)
+    if job is None:
+        return
+    model_name = str(job["model_name"] or selected_ollama_model())
+    with use_ollama_model(model_name):
+        if job["job_kind"] == "project_analysis":
+            process_project_analysis_job(job_id, cancel_event)
+        else:
+            process_active_chat_job(job_id, cancel_event)
 
 
 def process_project_analysis_job(job_id: str, cancel_event: threading.Event) -> None:
@@ -6452,7 +6786,7 @@ def process_project_analysis_job(job_id: str, cancel_event: threading.Event) -> 
                 """,
                 (error_text, project_id),
             )
-            record_chat_job_progress(db, job_id, "failed", update_stage=False)
+            record_chat_job_progress(db, job_id, "failed", update_stage=True)
         return
     if summary.status == "cancelled" or cancel_event.is_set():
         with connect_db() as db:
@@ -6463,7 +6797,7 @@ def process_project_analysis_job(job_id: str, cancel_event: threading.Event) -> 
                 """,
                 (job_id,),
             )
-            record_chat_job_progress(db, job_id, "cancelled", update_stage=False)
+            record_chat_job_progress(db, job_id, "cancelled", update_stage=True)
         return
     with connect_db() as db:
         db.execute(
@@ -6475,7 +6809,7 @@ def process_project_analysis_job(job_id: str, cancel_event: threading.Event) -> 
         )
         record_chat_job_progress(
             db, job_id, "completed" if summary.status == "completed" else "review_incomplete",
-            summary.completed_count, summary.total_count, update_stage=False,
+            summary.completed_count, summary.total_count, update_stage=True,
         )
 
 
@@ -6674,9 +7008,9 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse | JSONResponse:
             """
             INSERT INTO chat_jobs(
                 id, user_id, chat_id, message, mode, job_kind, user_message_id,
-                status, progress_stage, progress_total, started_at
+                model_name, status, progress_stage, progress_total, started_at
             )
-            VALUES (?, ?, ?, ?, ?, 'chat', ?, 'queued', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'chat', ?, ?, 'queued', ?, ?, ?)
             """,
             (
                 job_id,
@@ -6685,6 +7019,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse | JSONResponse:
                 payload.message,
                 payload.mode,
                 user_message_id,
+                selected_ollama_model(db),
                 progress_stage,
                 progress_total,
                 int(time.time()),

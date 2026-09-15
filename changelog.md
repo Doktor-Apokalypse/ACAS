@@ -9,6 +9,26 @@ reliably; curated application entries begin on 2026-08-24.
 
 Changes, replacements, and reversions are labelled explicitly.
 
+## Runtime Lemonade model selection
+
+**2026-09-15 16:24:23 UTC** · Model management / **Added**
+
+- Replace the administrator's static model badge with a dropdown populated from Lemonade's downloaded chat models, including the currently loaded model.
+- Load and persist the selected model without requiring a PyCharm environment change, while retaining OLLAMA_MODEL as the initial and recovery fallback.
+- Prevent model changes while work is queued or processing and capture the selected model on every new job so one job cannot change models midway.
+- Use each job's captured model for request routing, output budgets, usage observations, function-analysis storage and cache identity.
+- Restrict changes to administrators, record changes in the administrator audit trail, and keep ordinary users informed of the selected model.
+
+**Source:** main.py, web_assets.py, app_config.py, analysis_engine.py, function_budget.py, project_function_analysis.py, migrations.py, README.md and regression tests
+
+## Migration 35: Runtime Model Selection
+
+**2026-09-15 16:24:23 UTC** · Database / **Added**
+
+- Persist the selected model, capture it on jobs, and audit model changes.
+
+**Source:** migrations.py :: migration_035_runtime_model_selection
+
 ## Reworked installation and usage guidance
 
 **2026-09-11 20:05:15 UTC** · Documentation / **Changed**

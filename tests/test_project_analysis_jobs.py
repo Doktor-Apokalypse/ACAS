@@ -186,11 +186,12 @@ class ProjectAnalysisJobTests(DatabaseTestCase):
         self.assertEqual(status["job_kind"], "project_analysis")
         self.assertNotIn("reply", status)
         self.assertEqual(status["project"]["function_analysis_completed_count"], 2)
-        self.assertEqual(status["progress_file_path"], "demo/main.py")
-        self.assertEqual(status["progress_file_current"], 1)
-        self.assertEqual(status["progress_file_total"], 1)
-        self.assertEqual(status["progress_function_current"], 2)
-        self.assertEqual(status["progress_function_total"], 2)
+        self.assertEqual(status["progress_stage"], "completed")
+        self.assertIsNone(status["progress_file_path"])
+        self.assertEqual(status["progress_file_current"], 0)
+        self.assertEqual(status["progress_file_total"], 0)
+        self.assertEqual(status["progress_function_current"], 0)
+        self.assertEqual(status["progress_function_total"], 0)
         messages = [event["message"] for event in status["progress_log"]]
         self.assertIn("demo/main.py/second", messages)
         self.assertFalse(any(message.startswith("File ") for message in messages))
@@ -214,6 +215,8 @@ class ProjectAnalysisJobTests(DatabaseTestCase):
         self.assertNotEqual(status["project"]["function_analysis_status"], "completed")
         self.assertIn("resume to retry incomplete reviews", status["progress_log"][-1]["message"])
         self.assertNotEqual(status["progress_log"][-1]["message"], "Project function analysis completed")
+        self.assertEqual(status["progress_stage"], "review_incomplete")
+        self.assertIsNone(status["progress_file_path"])
 
     def test_identical_consecutive_function_messages_are_logged_once(self) -> None:
         user_id, _chat_id, project_id = self.create_project("deduplicated-progress")

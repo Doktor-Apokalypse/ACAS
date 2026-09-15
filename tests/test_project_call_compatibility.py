@@ -105,6 +105,8 @@ class ProjectCallCompatibilityTests(DatabaseTestCase):
         self.assertTrue(types_compatible(("ast.Attribute",), ("ast.AST",)))
         self.assertTrue(types_compatible(("FunctionDef",), ("AST",)))
         self.assertTrue(types_compatible(("str",), ("Literal['user', 'assistant']",)))
+        self.assertTrue(types_compatible(("None",), ("'dict | None'",)))
+        self.assertTrue(types_compatible(("LivePressureGuard",), ("'LivePressureGuard'",)))
 
     def test_generic_container_types_preserve_outer_type_and_compare_elements(self) -> None:
         self.assertEqual(normalize_type("tuple[object, ...]"), "tuple")
@@ -129,6 +131,12 @@ class ProjectCallCompatibilityTests(DatabaseTestCase):
             types_compatible(
                 ("FunctionAnalysisTask",),
                 ("object with attributes file_id, source",),
+            )
+        )
+        self.assertTrue(
+            types_compatible(
+                ("FunctionAnalysisTask",),
+                ("object with attribute symbol_id",),
             )
         )
 
@@ -164,9 +172,40 @@ class ProjectCallCompatibilityTests(DatabaseTestCase):
 
         self.assertEqual(inferred[id(calls[0].args[0])], ("ast.Call",))
         self.assertEqual(inferred[id(calls[1].args[0])], ("list[Item]",))
-        self.assertEqual(inferred[id(calls[2].args[0])], ("Callable", "None"))
+        self.assertEqual(
+            inferred[id(calls[2].args[0])],
+            ("BatchRequest", "Callable", "None"),
+        )
         self.assertEqual(inferred[id(calls[3].args[0])], ("ast.Raise",))
         self.assertEqual(inferred[id(calls[4].args[0])], ("Item",))
+
+    def test_python_union_isinstance_and_comprehension_filters_narrow_types(self) -> None:
+        module = ast.parse(
+            "def inspect_nodes(nodes: list[ast.AST], current: ast.AST | None):\n"
+            "    if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef):\n"
+            "        target(current)\n"
+            "    for selected in (node for node in nodes "
+            "if isinstance(node, ast.Try | ast.TryStar)):\n"
+            "        target(selected)\n"
+        )
+        inferred = PythonAdapter._ast_argument_type_index(module)
+        calls = sorted(
+            (
+                node for node in ast.walk(module)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "target"
+            ),
+            key=lambda node: node.lineno,
+        )
+        self.assertEqual(
+            inferred[id(calls[0].args[0])],
+            ("ast.FunctionDef", "ast.AsyncFunctionDef"),
+        )
+        self.assertEqual(
+            inferred[id(calls[1].args[0])],
+            ("ast.Try", "ast.TryStar"),
+        )
 
     def test_python_tuple_literals_record_homogeneous_and_fixed_element_types(self) -> None:
         homogeneous = PythonAdapter._ast_literal_types(
@@ -656,6 +695,43 @@ class ProjectCallCompatibilityTests(DatabaseTestCase):
         self.assertEqual(row["usage_kind"], "condition")
         self.assertEqual(row["status"], "compatible")
 
+    def test_async_no_value_calls_are_valid_until_they_are_awaited_as_values(self) -> None:
+        content = (
+            b"async def no_value():\n    pass\n\n"
+            b"async def run():\n"
+            b"    await no_value()\n"
+            b"    task = create_task(no_value())\n"
+            b"    result = await no_value()\n"
+        )
+        _user_id, project_id = self.create_source_project("async-usage", content)
+        with main.connect_db() as db:
+            symbol = db.execute(
+                "SELECT id FROM project_symbols WHERE project_id = ? AND qualified_name = 'no_value'",
+                (project_id,),
+            ).fetchone()
+            task = load_function_analysis_task(db, int(symbol["id"]))
+            persist_function_analysis(db, task, contract(returns=None))
+            check_project_call_compatibility(db, project_id)
+            rows = db.execute(
+                """
+                SELECT call.usage_kind, compatibility.status
+                FROM project_calls AS call
+                JOIN project_call_compatibility AS compatibility ON compatibility.call_id = call.id
+                WHERE call.project_id = ? AND call.callee = 'no_value'
+                ORDER BY call.start_byte
+                """,
+                (project_id,),
+            ).fetchall()
+
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [
+                ("statement", "compatible"),
+                ("argument", "compatible"),
+                ("assignment", "incompatible"),
+            ],
+        )
+
     def test_variable_receiver_method_call_does_not_resolve_to_unrelated_function(self) -> None:
         user_id = self.create_user("receiver-method")
         project_id = "receiver-method-project"
@@ -1004,6 +1080,15 @@ class ProjectCallCompatibilityTests(DatabaseTestCase):
         self.assertIn("source_integrity", first)
         self.assertNotIn("content", first["source_integrity"]["files"][0])
         self.assertNotIn("source", first["source_integrity"]["files"][0])
+        self.assertEqual(first["source_integrity"]["status"], "stored_only")
+        self.assertEqual(
+            first["source_integrity"]["files"][0]["workspace_status"],
+            "not_linked",
+        )
+        self.assertIn(
+            "no linked workspace file",
+            first["source_integrity"]["files"][0]["workspace_note"],
+        )
 
         with main.connect_db() as db:
             symbol_id = db.execute(
@@ -1069,6 +1154,76 @@ class ProjectCallCompatibilityTests(DatabaseTestCase):
                 ),
             )
         self.assertEqual(hidden.exception.status_code, 404)
+
+    def test_analysis_report_omits_function_issue_duplicated_by_call_finding(self) -> None:
+        user_id, project_id = self.create_source_project(
+            "deduplicated-report",
+            (
+                b"def target(value):\n"
+                b"    return value\n"
+                b"\n"
+                b"def caller():\n"
+                b"    return target(value=1, extra=True)\n"
+            ),
+        )
+        with main.connect_db() as db:
+            caller = db.execute(
+                "SELECT id FROM project_symbols WHERE project_id = ? AND qualified_name = 'caller'",
+                (project_id,),
+            ).fetchone()
+            call = db.execute(
+                "SELECT id FROM project_calls WHERE project_id = ? AND start_line = 5",
+                (project_id,),
+            ).fetchone()
+            caller_task = load_function_analysis_task(db, int(caller["id"]))
+            persist_function_analysis(db, caller_task, contract(returns="object"))
+            db.execute(
+                """
+                INSERT INTO project_symbol_issues(
+                    symbol_id, ordinal, severity, category, title,
+                    description, start_line, end_line, provenance
+                ) VALUES (?, 0, 'error', 'type', 'Unexpected keyword argument',
+                          'Duplicate function-level call issue.', 5, 5, 'deterministic')
+                """,
+                (caller["id"],),
+            )
+            db.execute(
+                """
+                INSERT INTO project_call_compatibility(
+                    call_id, project_id, caller_symbol_id, callee_symbol_id,
+                    status, argument_status, return_status, scope_status
+                )
+                SELECT id, project_id, caller_symbol_id, resolved_symbol_id,
+                       'incompatible', 'incompatible', 'unknown', 'in_scope'
+                FROM project_calls WHERE id = ?
+                """,
+                (call["id"],),
+            )
+            db.execute(
+                """
+                INSERT INTO project_call_findings(
+                    call_id, ordinal, severity, finding_kind, message
+                ) VALUES (?, 0, 'error', 'unexpected_keyword',
+                          'Unexpected keyword argument extra.')
+                """,
+                (call["id"],),
+            )
+
+        report = main.get_project_analysis_report(
+            project_id,
+            self.authenticated_request(
+                user_id, path=f"/api/projects/{project_id}/analysis-report"
+            ),
+        )
+        caller_report = next(
+            item for item in report["functions"] if item["qualified_name"] == "caller"
+        )
+        self.assertEqual(caller_report["issues"], [])
+        call_report = next(item for item in report["calls"] if item["start_line"] == 5)
+        self.assertEqual(
+            [item["finding_kind"] for item in call_report["findings"]],
+            ["unexpected_keyword"],
+        )
 
     def test_analysis_report_flags_changed_matching_workspace_source(self) -> None:
         user_id, project_id = self.create_project()

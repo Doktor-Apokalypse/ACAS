@@ -113,21 +113,29 @@ class PythonAdapter(LanguageAdapter):
         parent = call.parent
         while parent is not None and parent.type in {"parenthesized_expression"}:
             parent = parent.parent
+        if parent is not None and parent.type == "await":
+            parent = parent.parent
+            while parent is not None and parent.type in {"parenthesized_expression"}:
+                parent = parent.parent
+
+        def usage(value: str) -> str:
+            return value
+
         if parent is None:
-            return "unknown", ()
+            return usage("unknown"), ()
         if parent.type == "expression_statement":
-            return "statement", ()
+            return usage("statement"), ()
         if parent.type == "return_statement":
-            return "return", ()
+            return usage("return"), ()
         if parent.type in {"assignment", "annotated_assignment", "named_expression"}:
             annotation = parent.child_by_field_name("type")
             expected = (self.node_text(annotation, source),) if annotation else ()
-            return "assignment", expected
+            return usage("assignment"), expected
         if parent.type == "argument_list":
-            return "argument", ()
+            return usage("argument"), ()
         if parent.type in {"if_statement", "while_statement", "conditional_expression"}:
-            return "condition", ("bool",)
-        return "value", ()
+            return usage("condition"), ("bool",)
+        return usage("value"), ()
 
     @staticmethod
     def _ast_walk(root: ast.AST):
@@ -337,6 +345,37 @@ class PythonAdapter(LanguageAdapter):
                 parts = [part for part in tuple_match.group(1).split(",") if part != "..."]
                 values.extend(parts)
         return PythonAdapter._merge_inferred_types(tuple(values))
+
+    @staticmethod
+    def _ast_type_expression_names(node: ast.AST | None) -> tuple[str, ...]:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return PythonAdapter._merge_inferred_types(
+                PythonAdapter._ast_type_expression_names(node.left),
+                PythonAdapter._ast_type_expression_names(node.right),
+            )
+        if isinstance(node, ast.Tuple):
+            return PythonAdapter._merge_inferred_types(
+                *(PythonAdapter._ast_type_expression_names(item) for item in node.elts)
+            )
+        name = PythonAdapter._ast_dotted_name(node)
+        return (name,) if name else ()
+
+    @staticmethod
+    def _ast_isinstance_narrowing(test: ast.AST, name: str) -> tuple[str, ...]:
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            return PythonAdapter._merge_inferred_types(
+                *(PythonAdapter._ast_isinstance_narrowing(value, name) for value in test.values)
+            )
+        if (
+            isinstance(test, ast.Call)
+            and isinstance(test.func, ast.Name)
+            and test.func.id == "isinstance"
+            and len(test.args) >= 2
+            and isinstance(test.args[0], ast.Name)
+            and test.args[0].id == name
+        ):
+            return PythonAdapter._ast_type_expression_names(test.args[1])
+        return ()
 
     @staticmethod
     def _scope_nodes(scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[ast.AST, ...]:
@@ -572,6 +611,12 @@ class PythonAdapter(LanguageAdapter):
                     item_types = cls._generic_item_types(iterable)
                     if item_types:
                         local[generator.target.id] = item_types
+                    for condition in generator.ifs:
+                        narrowed = cls._ast_isinstance_narrowing(
+                            condition, generator.target.id
+                        )
+                        if narrowed:
+                            local[generator.target.id] = narrowed
             item_types = cls._ast_infer_types(
                 node.elt,
                 local,
@@ -584,7 +629,11 @@ class PythonAdapter(LanguageAdapter):
             base = "list" if isinstance(node, ast.ListComp) else (
                 "set" if isinstance(node, ast.SetComp) else "Iterator"
             )
-            return (f"{base}[{item_types[0]}]",) if len(item_types) == 1 else (base,)
+            return (
+                tuple(f"{base}[{item_type}]" for item_type in item_types)
+                if item_types
+                else (base,)
+            )
         if isinstance(node, ast.DictComp):
             local = dict(environment)
             for generator in node.generators:
@@ -601,6 +650,12 @@ class PythonAdapter(LanguageAdapter):
                     item_types = cls._generic_item_types(iterable)
                     if item_types:
                         local[generator.target.id] = item_types
+                    for condition in generator.ifs:
+                        narrowed = cls._ast_isinstance_narrowing(
+                            condition, generator.target.id
+                        )
+                        if narrowed:
+                            local[generator.target.id] = narrowed
             keys = cls._ast_infer_types(
                 node.key,
                 local,
@@ -770,7 +825,7 @@ class PythonAdapter(LanguageAdapter):
 
         def annotation_types(node: ast.AST | None) -> tuple[str, ...]:
             if isinstance(node, ast.Name) and node.id in type_aliases:
-                return type_aliases[node.id]
+                return cls._merge_inferred_types((node.id,), type_aliases[node.id])
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
                 return cls._merge_inferred_types(
                     annotation_types(node.left), annotation_types(node.right)
@@ -953,12 +1008,7 @@ class PythonAdapter(LanguageAdapter):
                 ):
                     if not truthy:
                         return
-                    checked = test.args[1]
-                    nodes = checked.elts if isinstance(checked, ast.Tuple) else [checked]
-                    names = tuple(
-                        name for item in nodes
-                        if (name := cls._ast_dotted_name(item))
-                    )
+                    names = cls._ast_type_expression_names(test.args[1])
                     if names:
                         environment[test.args[0].id] = names
                     return
@@ -1136,22 +1186,28 @@ class PythonAdapter(LanguageAdapter):
     @staticmethod
     def _ast_call_usage(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> tuple[str, tuple[str, ...]]:
         parent = parents.get(call)
+        if isinstance(parent, ast.Await):
+            parent = parents.get(parent)
+
+        def usage(value: str) -> str:
+            return value
+
         while isinstance(parent, ast.Expr) and isinstance(parent.value, ast.Call) and parent.value is not call:
             parent = parents.get(parent)
         if isinstance(parent, ast.Expr):
-            return "statement", ()
+            return usage("statement"), ()
         if isinstance(parent, ast.Return):
-            return "return", ()
+            return usage("return"), ()
         if isinstance(parent, ast.Assign | ast.NamedExpr):
-            return "assignment", ()
+            return usage("assignment"), ()
         if isinstance(parent, ast.AnnAssign):
             annotation = ast.unparse(parent.annotation) if parent.annotation else ""
-            return "assignment", (annotation,) if annotation else ()
+            return usage("assignment"), (annotation,) if annotation else ()
         if isinstance(parent, ast.keyword) or isinstance(parent, ast.Call):
-            return "argument", ()
+            return usage("argument"), ()
         if isinstance(parent, ast.If | ast.While | ast.IfExp):
-            return "condition", ("bool",)
-        return "value", ()
+            return usage("condition"), ("bool",)
+        return usage("value"), ()
 
     @classmethod
     def _ast_call_arguments(

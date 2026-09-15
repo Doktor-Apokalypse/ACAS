@@ -209,9 +209,11 @@ def prepare_budget(db, task, *, source: str | None = None, recursive: bool = Fal
     source = task.source if source is None else source
     features = structural_features(task.language, source)
     if semantic_review:
-        from app_config import OLLAMA_MODEL
+        from app_config import OLLAMA_MODEL, current_ollama_model
         features["semantic_review"] = True
-        features["dedicated_reasoning"] = not _is_qwen25_coder_model(OLLAMA_MODEL)
+        features["dedicated_reasoning"] = not _is_qwen25_coder_model(
+            current_ollama_model(OLLAMA_MODEL)
+        )
     rows = db.execute("""SELECT c.callee,c.resolution_status,c.resolved_symbol_id,s.file_id
                          FROM project_calls c LEFT JOIN project_symbols s ON s.id=c.resolved_symbol_id
                          WHERE c.project_id=? AND c.caller_symbol_id=?""", (task.project_id, task.symbol_id)).fetchall()
@@ -229,9 +231,9 @@ def prepare_budget(db, task, *, source: str | None = None, recursive: bool = Fal
                 recursive=recursive or task.symbol_id in resolved)
     initial = estimate_output(features, deps)
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    from app_config import OLLAMA_MODEL, OLLAMA_GPT_OSS_REASONING
+    from app_config import OLLAMA_MODEL, OLLAMA_GPT_OSS_REASONING, current_ollama_model
     reasoning_profile = "none" if features.get("dedicated_reasoning") is False else OLLAMA_GPT_OSS_REASONING
-    model = OLLAMA_MODEL + ":reasoning=" + reasoning_profile
+    model = current_ollama_model(OLLAMA_MODEL) + ":reasoning=" + reasoning_profile
     if semantic_review:
         model += ":semantic-v4"
     rows = db.execute("""SELECT source_hash,generated_tokens,output_limit,truncated,outcome

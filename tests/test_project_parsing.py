@@ -227,6 +227,26 @@ class LanguageAdapterTests(DatabaseTestCase):
             [("int",), ("string",)],
         )
 
+    def test_python_await_usage_preserves_the_enclosing_value_context(self) -> None:
+        text = (
+            "async def no_value():\n"
+            "    pass\n\n"
+            "async def run():\n"
+            "    await no_value()\n"
+            "    task = create_task(no_value())\n"
+            "    result = await no_value()\n"
+        )
+        adapter = get_adapter("python")
+        calls = adapter.extract_structure(adapter.parse_text(text), text).calls
+
+        no_value_usages = [
+            call.usage_kind for call in calls if call.callee == "no_value"
+        ]
+        self.assertEqual(
+            no_value_usages,
+            ["statement", "argument", "assignment"],
+        )
+
     def test_python_call_arguments_use_conservative_local_type_flow(self) -> None:
         source = (
             "def produce(raw: str) -> str:\n"
@@ -738,6 +758,48 @@ class ProjectParsingPersistenceTests(DatabaseTestCase):
                 ("mixedcase", "internal", "MixedCase"),
             ],
         )
+
+    def test_python_component_receiver_resolves_to_the_assigned_class(self) -> None:
+        user_id = self.create_user("component-receiver")
+        content = (
+            b"class Memory:\n"
+            b"    def resetMemory(self, length):\n        return length\n\n"
+            b"class Brain:\n"
+            b"    def __init__(self):\n        self.memory = Memory()\n"
+            b"    def resetMemory(self):\n        return None\n"
+            b"    def run(self):\n        return self.memory.resetMemory(3)\n"
+        )
+        with main.connect_db() as db:
+            db.execute(
+                "INSERT INTO chat_histories(id, user_id, title) VALUES ('receiver-chat', ?, 'Receiver')",
+                (user_id,),
+            )
+            db.execute(
+                """
+                INSERT INTO projects(id, user_id, chat_id, name, source_kind, file_count, total_bytes)
+                VALUES ('receiver-project', ?, 'receiver-chat', 'receiver', 'folder', 1, ?)
+                """,
+                (user_id, len(content)),
+            )
+            db.execute(
+                """
+                INSERT INTO project_files(project_id, path, content, size_bytes, sha256, is_binary)
+                VALUES ('receiver-project', 'brain.py', ?, ?, ?, 0)
+                """,
+                (content, len(content), hashlib.sha256(content).hexdigest()),
+            )
+            inventory_project_database(db, "receiver-project")
+            parse_project_database(db, "receiver-project")
+            row = db.execute(
+                """
+                SELECT call.resolution_status, target.qualified_name
+                FROM project_calls AS call
+                LEFT JOIN project_symbols AS target ON target.id = call.resolved_symbol_id
+                WHERE call.callee = 'self.memory.resetMemory'
+                """
+            ).fetchone()
+
+        self.assertEqual(tuple(row), ("internal", "Memory.resetMemory"))
 
 
 if __name__ == "__main__":

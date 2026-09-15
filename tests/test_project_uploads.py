@@ -6,6 +6,7 @@ import json
 import stat
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from starlette.datastructures import UploadFile
@@ -16,10 +17,14 @@ from project_function_analysis import load_function_analysis_task
 from project_uploads import (
     ProjectUploadError,
     ProjectUploadTooLarge,
+    ProjectBundle,
+    project_file,
     UploadLimits,
     ingest_folder,
+    ingest_github_repository,
     ingest_files,
     ingest_zip,
+    validate_github_repository_url,
 )
 from tests.helpers import DatabaseTestCase, run_asgi_response
 
@@ -33,6 +38,41 @@ def zip_bytes(entries: dict[str, bytes], *, compression: int = zipfile.ZIP_DEFLA
 
 
 class SafeProjectIngestionTests(unittest.TestCase):
+    def test_github_urls_require_direct_credential_free_https_urls(self) -> None:
+        self.assertEqual(
+            validate_github_repository_url(" https://github.com/acme/demo.git "),
+            ("acme", "demo"),
+        )
+        rejected = (
+            "http://github.com/acme/demo",
+            "https://user:secret@github.com/acme/demo",
+            "https://github.com:8443/acme/demo",
+            "https://example.com/acme/demo",
+            "https://github.com/acme/demo/tree/main",
+            "https://github.com/acme/demo#main",
+        )
+        for url in rejected:
+            with self.subTest(url=url), self.assertRaises(ProjectUploadError):
+                validate_github_repository_url(url)
+
+    def test_github_import_downloads_and_safely_ingests_a_source_archive(self) -> None:
+        archive = zip_bytes({
+            "acme-demo-abc123/README.md": b"# Demo\n",
+            "acme-demo-abc123/src/main.py": b"print(1)\n",
+            "acme-demo-abc123/node_modules/pkg.js": b"ignored",
+        })
+        with patch("project_uploads._download_github_archive", return_value=archive) as download:
+            bundle = ingest_github_repository("https://github.com/acme/demo", self.limits)
+
+        self.assertEqual(bundle.name, "demo")
+        self.assertEqual(bundle.source_kind, "folder")
+        self.assertEqual(bundle.skipped_files, 1)
+        self.assertEqual(
+            [(item.path, item.content) for item in bundle.files],
+            [("README.md", b"# Demo\n"), ("src/main.py", b"print(1)\n")],
+        )
+        download.assert_called_once_with("acme", "demo", self.limits.max_archive_bytes)
+
     def test_individual_files_are_flat_named_and_checked(self) -> None:
         single = ingest_files([("main.py", io.BytesIO(b"print('hello')\n"))], self.limits)
         self.assertEqual(single.name, "main.py")
@@ -121,6 +161,84 @@ class SafeProjectIngestionTests(unittest.TestCase):
 
 
 class ProjectUploadApiTests(DatabaseTestCase):
+    def test_github_repository_import_uses_the_existing_project_pipeline(self) -> None:
+        user_id = self.create_user("github-project")
+        chat_id = self.create_chat(user_id, "github-project-chat")
+        bundle = ProjectBundle(
+            "demo",
+            "folder",
+            (project_file("src/main.py", b"def main():\n    return 1\n"),),
+            25,
+            3,
+        )
+        with patch("main.ingest_github_repository", return_value=bundle) as importer:
+            result = asyncio.run(main.upload_project(
+                request=self.authenticated_request(
+                    user_id, method="POST", path="/api/projects"
+                ),
+                chat_id=chat_id,
+                source_kind="github",
+                repository_url="https://github.com/acme/demo",
+            ))
+
+        importer.assert_called_once_with(
+            "https://github.com/acme/demo",
+            main.PROJECT_UPLOAD_LIMITS,
+        )
+        self.assertEqual(result["name"], "demo")
+        self.assertEqual(result["file_count"], 1)
+        self.assertEqual(result["primary_language"], "python")
+        with main.connect_db() as db:
+            project = db.execute(
+                "SELECT source_kind, skipped_file_count FROM projects WHERE id = ?",
+                (result["id"],),
+            ).fetchone()
+            batch = db.execute(
+                "SELECT source_kind, name FROM project_upload_batches WHERE project_id = ?",
+                (result["id"],),
+            ).fetchone()
+        self.assertEqual(tuple(project), ("folder", 3))
+        self.assertEqual(tuple(batch), ("folder", "demo (GitHub)"))
+
+    def test_real_multipart_github_request_reaches_upload_endpoint_without_files(self) -> None:
+        user_id = self.create_user("multipart-github")
+        chat_id = self.create_chat(user_id, "multipart-github-chat")
+        request = self.authenticated_request(user_id)
+        boundary = "github-import-boundary"
+        repository_url = "https://github.com/acme/demo"
+        parts = [
+            (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode()
+            for name, value in (
+                ("chat_id", chat_id),
+                ("source_kind", "github"),
+                ("repository_url", repository_url),
+            )
+        ]
+        parts.append(f"--{boundary}--\r\n".encode())
+        bundle = ProjectBundle(
+            "demo",
+            "folder",
+            (project_file("main.py", b"def main():\n    return 1\n"),),
+            25,
+            0,
+        )
+        with patch("main.ingest_github_repository", return_value=bundle) as importer:
+            status, _, body = run_asgi_response(
+                method="POST",
+                path="/api/projects",
+                host="127.0.0.1:8000",
+                origin="http://127.0.0.1:8000",
+                body=b"".join(parts),
+                content_type=f"multipart/form-data; boundary={boundary}",
+                cookie=request.headers["cookie"],
+            )
+        self.assertEqual(status, 201, body.decode(errors="replace"))
+        self.assertEqual(json.loads(body)["name"], "demo")
+        importer.assert_called_once_with(repository_url, main.PROJECT_UPLOAD_LIMITS)
+
     def test_real_multipart_file_selection_is_persisted_and_indexed(self) -> None:
         user_id = self.create_user("multipart-files")
         chat_id = self.create_chat(user_id)
@@ -458,7 +576,7 @@ class ProjectUploadApiTests(DatabaseTestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM project_files").fetchone()[0], 0)
 
-    def test_composer_contains_files_folder_and_zip_attachment_controls(self) -> None:
+    def test_composer_contains_files_folder_zip_and_github_attachment_controls(self) -> None:
         self.assertGreaterEqual(web_assets.HTML.count("Apokalypse Code Analysis System"), 2)
         self.assertNotIn('class="sidebar"', web_assets.HTML)
         self.assertNotIn('id="new-chat"', web_assets.HTML)
@@ -477,6 +595,16 @@ class ProjectUploadApiTests(DatabaseTestCase):
         self.assertIn('id="folder-input"', web_assets.HTML)
         self.assertIn("webkitdirectory", web_assets.HTML)
         self.assertIn('id="zip-input"', web_assets.HTML)
+        self.assertIn('id="choose-github"', web_assets.HTML)
+        self.assertIn('id="github-import-modal"', web_assets.HTML)
+        self.assertIn("Git is not required", web_assets.HTML)
+        self.assertIn("uploadGitHubRepository(repositoryUrl)", web_assets.HTML)
+        self.assertIn("formData.append('source_kind','github')", web_assets.HTML)
+        self.assertIn(
+            "projectUploading=false;if(currentChatId===requestedChatId)",
+            web_assets.HTML,
+        )
+        self.assertIn("Wait for the current project change to finish.", web_assets.HTML)
         self.assertIn("/api/projects", web_assets.HTML)
         self.assertIn("/analysis-jobs", web_assets.HTML)
         self.assertIn("project-chip-action", web_assets.HTML)

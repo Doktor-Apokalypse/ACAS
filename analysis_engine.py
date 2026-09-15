@@ -44,6 +44,7 @@ from app_config import (
     OLLAMA_GPT_OSS_REASONING,
     OLLAMA_MAX_OUTPUT_TOKENS,
     OLLAMA_MODEL,
+    current_ollama_model,
     OLLAMA_REPEAT_PENALTY,
     OLLAMA_SOCKET_TIMEOUT,
     OLLAMA_TEMPERATURE,
@@ -1622,9 +1623,9 @@ def ollama_decoding_schema(schema: dict[str, object]) -> dict[str, object]:
 
 
 def _uses_lemonade_openai_chat(model: str) -> bool:
-    """Use Lemonade's native chat route for its Ryzen AI Hybrid models."""
+    """Use Lemonade's native chat route for Ryzen AI deployment names."""
     model_name = model.rsplit(":", 1)[0].casefold()
-    return model_name.endswith("-hybrid")
+    return model_name.endswith(("-hybrid", "-ryzen-strix"))
 
 
 def _is_semantic_review_schema(schema: object) -> bool:
@@ -1648,8 +1649,9 @@ def ask_ollama(
     cancel_check: Callable[[], bool] | None = None,
     request_timeout: float | None = None,
 ) -> str:
-    is_gpt_oss = OLLAMA_MODEL.split(":", 1)[0].casefold() == "gpt-oss"
-    use_lemonade_openai = _uses_lemonade_openai_chat(OLLAMA_MODEL)
+    model_name = current_ollama_model(OLLAMA_MODEL)
+    is_gpt_oss = model_name.split(":", 1)[0].casefold() == "gpt-oss"
+    use_lemonade_openai = _uses_lemonade_openai_chat(model_name)
     for attempt in range(2):
         if cancel_check and cancel_check():
             raise AnalysisCancelled("Analysis cancelled by user")
@@ -1726,14 +1728,14 @@ def ask_ollama(
                 minimum=OLLAMA_ANALYSIS_CONTEXT_MIN, maximum=OLLAMA_ANALYSIS_CONTEXT_MAX,
             )
             LOGGER.info("Ollama analysis budget: model=%s context=%s estimated_input=%s output_allowance=%s",
-                        OLLAMA_MODEL, options["num_ctx"], estimated_input, options["num_predict"])
+                        model_name, options["num_ctx"], estimated_input, options["num_predict"])
         if use_lemonade_openai:
             # Lemonade's Ryzen AI backend currently handles these models correctly
             # through its native OpenAI route. Its Ollama adapter accepts `format`
             # but can corrupt Hybrid model output instead of enforcing the schema.
             # The complete schema remains embedded in the system prompt above.
             body_data: dict[str, object] = {
-                "model": OLLAMA_MODEL,
+                "model": model_name,
                 "messages": request_messages,
                 "stream": True,
                 "max_completion_tokens": options["num_predict"],
@@ -1745,7 +1747,7 @@ def ask_ollama(
             request_url = f"{OLLAMA_URL.rstrip('/')}/v1/chat/completions"
         else:
             body_data = {
-                "model": OLLAMA_MODEL,
+                "model": model_name,
                 "messages": request_messages,
                 "stream": True,
                 "options": options,
@@ -1991,7 +1993,7 @@ def ask_ollama(
                 LOGGER.info(
                     "Ollama analysis timing: model=%s context=%s prompt_tokens=%s generated_tokens=%s "
                     "load_ms=%s prompt_ms=%s generation_ms=%s total_ms=%s",
-                    OLLAMA_MODEL, options["num_ctx"], last_event.get("prompt_eval_count"), last_event.get("eval_count"),
+                    model_name, options["num_ctx"], last_event.get("prompt_eval_count"), last_event.get("eval_count"),
                     *[round(last_event[key] / 1_000_000, 1) if isinstance(last_event.get(key), (int, float)) else None
                       for key in ("load_duration", "prompt_eval_duration", "eval_duration", "total_duration")],
                 )

@@ -514,6 +514,114 @@ class FunctionAnalysisContractTests(DatabaseTestCase):
         self.assertNotIn("Possible None dereference", titles)
         self.assertNotIn("SQL built with f-string", titles)
 
+    def test_deterministic_contract_respects_optional_normalization_and_walrus_filters(self) -> None:
+        sources = {
+            "normalize_source": (
+                "def normalize_source(task, source: str | None = None):\n"
+                "    source = task.source if source is None else source\n"
+                "    return source.encode('utf-8')\n"
+            ),
+            "normalize_mapping": (
+                "def normalize_mapping(values: dict | None = None):\n"
+                "    values = values or {}\n"
+                "    return values.get('key')\n"
+            ),
+            "normalize_factory": (
+                "def normalize_factory(current_date: object | None = None):\n"
+                "    current_date = current_date or get_bby_now()\n"
+                "    return current_date.replace(microsecond=0)\n"
+            ),
+            "walrus_filter": (
+                "def walrus_filter(nodes):\n"
+                "    return [name for node in nodes "
+                "if node is not None and (name := str(node)) is not None]\n"
+            ),
+        }
+        for qualified_name, source in sources.items():
+            with self.subTest(qualified_name=qualified_name):
+                task = project_function_analysis.FunctionAnalysisTask(
+                    symbol_id=1,
+                    project_id="p",
+                    user_id=1,
+                    file_id=1,
+                    file_path="safe.py",
+                    language="python",
+                    symbol_kind="function",
+                    qualified_name=qualified_name,
+                    start_line=1,
+                    end_line=source.count("\n"),
+                    source_sha256="0" * 64,
+                    function_sha256="1" * 64,
+                    source=source,
+                )
+                result = deterministic_python_contract(task, valid_result())
+                titles = {issue.title for issue in result.issues}
+                self.assertNotIn("Possible None dereference", titles)
+                self.assertNotIn("Local variable may be used before assignment", titles)
+
+    def test_module_bindings_and_star_imports_are_available_to_name_analysis(self) -> None:
+        source = (
+            "def run(flag):\n"
+            "    print(MODULE_VALUE, STAR_VALUE)\n"
+            "    if flag:\n"
+            "        local_value = 1\n"
+            "    return local_value\n"
+        )
+        task = project_function_analysis.FunctionAnalysisTask(
+            symbol_id=1,
+            project_id="p",
+            user_id=1,
+            file_id=1,
+            file_path="imports.py",
+            language="python",
+            symbol_kind="function",
+            qualified_name="run",
+            start_line=1,
+            end_line=source.count("\n"),
+            source_sha256="0" * 64,
+            function_sha256="1" * 64,
+            source=source,
+            module_defined_names=("MODULE_VALUE",),
+            has_wildcard_import=True,
+        )
+
+        result = deterministic_python_contract(task, valid_result())
+        undefined_descriptions = [
+            issue.description
+            for issue in result.issues
+            if issue.title == "Possibly undefined variable"
+        ]
+        self.assertFalse(any("MODULE_VALUE" in item for item in undefined_descriptions))
+        self.assertFalse(any("STAR_VALUE" in item for item in undefined_descriptions))
+        self.assertIn(
+            "Local variable may be used before assignment",
+            {issue.title for issue in result.issues},
+        )
+
+    def test_quoted_union_return_annotation_accepts_none(self) -> None:
+        source = "def read_cache() -> 'dict | None':\n    return None\n"
+        task = project_function_analysis.FunctionAnalysisTask(
+            symbol_id=1,
+            project_id="p",
+            user_id=1,
+            file_id=1,
+            file_path="cache.py",
+            language="python",
+            symbol_kind="function",
+            qualified_name="read_cache",
+            start_line=1,
+            end_line=2,
+            source_sha256="0" * 64,
+            function_sha256="1" * 64,
+            source=source,
+        )
+        result = deterministic_python_contract(task, valid_result())
+
+        self.assertNotIn(
+            "Return type does not match annotation",
+            {issue.title for issue in result.issues},
+        )
+
     def test_deterministic_python_contract_flags_sql_fstring_variable_execution(self) -> None:
         source = (
             "def unsafe(username: str, db):\n"
@@ -1287,6 +1395,27 @@ class FunctionChunkingTests(DatabaseTestCase):
 
 
 class FunctionAnalysisPersistenceTests(DatabaseTestCase):
+    def test_nested_function_task_includes_enclosing_closure_names(self) -> None:
+        self.create_indexed_project(
+            b"def outer(module):\n"
+            b"    parents = {}\n"
+            b"    def inner(node):\n"
+            b"        return parents.get(node, module)\n"
+            b"    return inner\n"
+        )
+        with main.connect_db() as db:
+            symbol = db.execute(
+                "SELECT id FROM project_symbols WHERE qualified_name = 'outer.inner'"
+            ).fetchone()
+            task = load_function_analysis_task(db, int(symbol["id"]))
+        self.assertIn("module", task.enclosing_scope_names)
+        self.assertIn("parents", task.enclosing_scope_names)
+        result = project_function_analysis.deterministic_python_analysis(task)
+        self.assertNotIn(
+            "Possibly undefined variable",
+            {issue.title for issue in result.issues},
+        )
+
     def test_mutation_corpus_measures_engine_coverage_without_model_findings(self):
         from analysis_benchmark import (BenchmarkManifest, CleanRegion, default_mutation_recipes,
                                         evaluate_project, project_benchmark_details, load_project_observations)
@@ -1326,6 +1455,72 @@ class FunctionAnalysisPersistenceTests(DatabaseTestCase):
         self.assertEqual(metrics.missed_expectation_ids, ())
         self.assertEqual(len(details["by_language"]), 8)
         self.assertEqual(details["execution"]["function_analysis_model_request_count"], summary.model_request_count)
+
+    def test_seeded_eight_error_project_is_an_exact_engine_regression_benchmark(self):
+        from analysis_benchmark import evaluate_project, load_project_observations, seeded_error_fixture
+        from project_call_compatibility import check_project_call_compatibility
+
+        fixture = seeded_error_fixture()
+        first_path, first_source = next(iter(fixture.clean_sources.items()))
+        self.create_indexed_project(
+            first_source.encode(),
+            path=f"clean/{first_path}",
+        )
+        with main.connect_db() as db:
+            for prefix, sources in (
+                ("clean", fixture.clean_sources),
+                ("", fixture.mutated_sources),
+            ):
+                for path, source in sources.items():
+                    if prefix == "clean" and path == first_path:
+                        continue
+                    content = source.encode()
+                    db.execute(
+                        """
+                        INSERT INTO project_files(
+                            project_id, path, content, size_bytes, sha256, is_binary
+                        ) VALUES (?, ?, ?, ?, ?, 0)
+                        """,
+                        (
+                            "analysis-project",
+                            f"{prefix}/{path}" if prefix else path,
+                            content,
+                            len(content),
+                            hashlib.sha256(content).hexdigest(),
+                        ),
+                    )
+            inventory_project_database(db, "analysis-project")
+            parse_project_database(db, "analysis-project")
+
+        summary = analyze_project_functions(
+            main.connect_db,
+            "analysis-project",
+            analysis_request=lambda **kwargs: project_function_analysis._deterministic_seed_result(),
+        )
+        self.assertEqual(summary.failed_count, 0)
+        with main.connect_db() as db:
+            check_project_call_compatibility(db, "analysis-project")
+            metrics = evaluate_project(
+                db,
+                "analysis-project",
+                fixture.manifest,
+                analyzer_version="seeded-eight-test",
+            )
+            findings, _sources = load_project_observations(db, "analysis-project")
+
+        self.assertEqual(metrics.true_positive_count, 8)
+        self.assertEqual(metrics.missed_count, 0)
+        self.assertEqual(metrics.false_positive_count, 0, [
+            finding
+            for finding in findings
+            if finding.id in metrics.false_positive_finding_ids
+        ])
+        self.assertEqual(metrics.duplicate_count, 0)
+        self.assertTrue(all(
+            finding.report_tier == "advisory"
+            for finding in findings
+            if finding.id in metrics.clean_region_finding_ids
+        ))
 
     def test_javascript_caller_receives_resolved_source_and_prior_callee_contract(self):
         self.create_indexed_project(
@@ -3663,6 +3858,17 @@ class FunctionAnalysisPersistenceTests(DatabaseTestCase):
         self.assertEqual(summary.status, "completed")
         self.assertEqual((summary.completed_count, summary.failed_count), (1, 0))
         self.assertEqual(tuple(symbol), ("completed", None))
+
+        retried: list[str] = []
+        analyze_project_functions(
+            main.connect_db,
+            "partial-contract-project",
+            analysis_request=lambda **kwargs: (
+                retried.append(kwargs["qualified_name"]) or valid_result()
+            ),
+            retry_failed=True,
+        )
+        self.assertEqual(retried, ["passthrough"])
 
     def test_changed_source_is_marked_stale_without_calling_ollama(self) -> None:
         content = b"def first(value):\n    return value\n"

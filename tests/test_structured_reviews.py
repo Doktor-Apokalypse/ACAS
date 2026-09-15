@@ -85,6 +85,11 @@ class StructuredReviewTests(unittest.TestCase):
         self.assertIn('"maxLength":2000', requests[0]["messages"][0]["content"])
 
     def test_lemonade_hybrid_uses_native_openai_stream(self):
+        self.assertTrue(
+            engine._uses_lemonade_openai_chat(
+                "DeepSeek-R1-Distill-Qwen-7B-awq-g128-int4-asym-bf16-onnx-ryzen-strix"
+            )
+        )
         requests = []
 
         def capture(request, **kwargs):

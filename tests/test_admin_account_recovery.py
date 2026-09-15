@@ -143,7 +143,7 @@ class AdminAccountRecoveryTests(DatabaseTestCase):
 
             self.assertEqual(
                 apply_migrations(db),
-                [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34],
+                [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35],
             )
             preserved = db.execute(
                 "SELECT action, request_id FROM admin_audit_events WHERE id = 1"

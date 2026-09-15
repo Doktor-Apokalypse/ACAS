@@ -5,6 +5,9 @@ from __future__ import annotations
 import math
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -100,6 +103,24 @@ HOST = os.getenv("HOST", "127.0.0.1").strip()
 PORT = env_integer("PORT", 8000, minimum=1, maximum=65535)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-coder-v2:16B").strip()
+ACTIVE_JOB_MODEL: ContextVar[str | None] = ContextVar(
+    "active_job_model", default=None
+)
+
+
+def current_ollama_model(fallback: str | None = None) -> str:
+    """Return the model captured for this worker job or the configured fallback."""
+    return ACTIVE_JOB_MODEL.get() or fallback or OLLAMA_MODEL
+
+
+@contextmanager
+def use_ollama_model(model_name: str) -> Iterator[None]:
+    """Keep every model request within one queued job on its captured model."""
+    token = ACTIVE_JOB_MODEL.set(model_name)
+    try:
+        yield
+    finally:
+        ACTIVE_JOB_MODEL.reset(token)
 MAX_HISTORY_MESSAGES = env_integer("MAX_HISTORY_MESSAGES", 50, minimum=1)
 CHAT_HISTORY_PAGE_SIZE = env_integer(
     "CHAT_HISTORY_PAGE_SIZE", 20, minimum=1, maximum=100

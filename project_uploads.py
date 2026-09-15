@@ -12,6 +12,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import BinaryIO, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 IGNORED_DIRECTORY_NAMES = {
@@ -37,6 +40,8 @@ IGNORED_FILE_NAMES = {".DS_Store", "Thumbs.db"}
 READ_CHUNK_BYTES = 64 * 1024
 MAX_PROJECT_PATH_CHARS = 500
 MAX_PROJECT_COMPONENT_CHARS = 255
+GITHUB_IMPORT_TIMEOUT_SECONDS = 60
+GITHUB_ARCHIVE_HOSTS = {"api.github.com", "codeload.github.com"}
 
 
 class ProjectUploadError(ValueError):
@@ -45,6 +50,10 @@ class ProjectUploadError(ValueError):
 
 class ProjectUploadTooLarge(ProjectUploadError):
     """Raised when an upload exceeds a configured resource limit."""
+
+
+class GitHubImportUnavailable(ProjectUploadError):
+    """Raised when a GitHub source archive cannot be downloaded."""
 
 
 @dataclass(frozen=True)
@@ -148,6 +157,120 @@ def project_file(path: str, content: bytes) -> ProjectFile:
         size_bytes=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
         is_binary=content_is_binary(content),
+    )
+
+
+def validate_github_repository_url(value: str) -> tuple[str, str]:
+    """Return the owner and repository from a public GitHub project URL."""
+    url = value.strip()
+    if not url or len(url) > 2048:
+        raise ProjectUploadError("Enter a GitHub repository URL up to 2,048 characters")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ProjectUploadError("The GitHub repository URL is invalid") from exc
+    if parsed.scheme.casefold() != "https":
+        raise ProjectUploadError("GitHub repository imports require an HTTPS URL")
+    if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise ProjectUploadError("GitHub repository URLs cannot contain credentials")
+    if port not in {None, 443}:
+        raise ProjectUploadError("GitHub repository imports only support HTTPS on port 443")
+    if parsed.hostname.casefold() not in {"github.com", "www.github.com"}:
+        raise ProjectUploadError("Enter a public github.com repository URL")
+    if parsed.query or parsed.fragment or any(ord(character) < 32 for character in url):
+        raise ProjectUploadError("Enter the direct URL of a GitHub repository")
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) != 2:
+        raise ProjectUploadError("Use a GitHub URL in the form https://github.com/owner/repository")
+    owner, repository = parts
+    if repository.casefold().endswith(".git"):
+        repository = repository[:-4]
+    allowed_component = re.compile(r"^[A-Za-z0-9_.-]+$")
+    if (
+        not owner
+        or not repository
+        or owner in {".", ".."}
+        or repository in {".", ".."}
+        or not allowed_component.fullmatch(owner)
+        or not allowed_component.fullmatch(repository)
+    ):
+        raise ProjectUploadError("The GitHub owner or repository name is invalid")
+    return owner, repository
+
+
+class _GitHubArchiveRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        parsed = urlsplit(new_url)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise HTTPError(new_url, 403, "Invalid GitHub archive redirect", headers, file_pointer) from exc
+        if (
+            parsed.scheme.casefold() != "https"
+            or parsed.hostname is None
+            or parsed.hostname.casefold() not in GITHUB_ARCHIVE_HOSTS
+            or port not in {None, 443}
+        ):
+            raise HTTPError(new_url, 403, "Unsafe GitHub archive redirect", headers, file_pointer)
+        return super().redirect_request(request, file_pointer, code, message, headers, new_url)
+
+
+def _download_github_archive(owner: str, repository: str, maximum_bytes: int) -> bytes:
+    archive_url = (
+        f"https://api.github.com/repos/{quote(owner, safe='')}/"
+        f"{quote(repository, safe='')}/zipball"
+    )
+    request = Request(
+        archive_url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "ApokalypseCodeAnalysisSystem",
+        },
+    )
+    try:
+        with build_opener(_GitHubArchiveRedirectHandler()).open(
+            request,
+            timeout=GITHUB_IMPORT_TIMEOUT_SECONDS,
+        ) as response:
+            return read_limited(response, maximum_bytes, "GitHub repository download")
+    except HTTPError as exc:
+        if exc.code == 404:
+            message = "The public GitHub repository was not found or is empty"
+        elif exc.code == 403:
+            message = "GitHub refused the archive download or its public rate limit was reached"
+        else:
+            message = f"GitHub could not provide the repository archive (HTTP {exc.code})"
+        raise GitHubImportUnavailable(message) from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise GitHubImportUnavailable("The GitHub repository could not be downloaded") from exc
+
+
+def _strip_archive_root(bundle: ProjectBundle) -> tuple[ProjectFile, ...]:
+    paths = [PurePosixPath(file.path).parts for file in bundle.files]
+    if not paths or any(len(parts) < 2 for parts in paths):
+        raise ProjectUploadError("The GitHub archive has an unexpected folder layout")
+    root = paths[0][0]
+    if any(parts[0] != root for parts in paths):
+        raise ProjectUploadError("The GitHub archive has an unexpected folder layout")
+    return tuple(
+        project_file("/".join(parts[1:]), file.content)
+        for file, parts in zip(bundle.files, paths)
+    )
+
+
+def ingest_github_repository(repository_url: str, limits: UploadLimits) -> ProjectBundle:
+    """Download and safely ingest the default branch of a public GitHub repository."""
+    owner, repository = validate_github_repository_url(repository_url)
+    archive_data = _download_github_archive(owner, repository, limits.max_archive_bytes)
+    archive_bundle = ingest_zip(io.BytesIO(archive_data), f"{repository}.zip", limits)
+    files = _strip_archive_root(archive_bundle)
+    return ProjectBundle(
+        safe_project_name(repository, "Imported repository"),
+        "folder",
+        files,
+        sum(file.size_bytes for file in files),
+        archive_bundle.skipped_files,
     )
 
 

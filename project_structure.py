@@ -375,6 +375,7 @@ def _call_target_candidates(
     dependency_targets: dict[int, list[sqlite3.Row]],
     class_ancestors: dict[int, tuple[int, ...]],
     caller_class_id: int | None,
+    python_receiver_classes: dict[tuple[int, str], tuple[int, ...]],
 ) -> list[int]:
     normalized = callee.strip()
     simple_name = normalized.replace("->", ".").replace("::", ".").rsplit(".", 1)[-1]
@@ -425,9 +426,11 @@ def _call_target_candidates(
 
     caller_parent = str(caller["parent_qualified_name"] or "")
     caller_qualified = str(caller["caller_qualified_name"] or "")
+    receiver_parts = normalized_qualifiers.split(".")
     is_receiver_call = normalized.startswith(("self.", "cls.", "this.", "this->"))
+    is_direct_receiver_call = is_receiver_call and len(receiver_parts) == 2
 
-    if language == "python" and is_receiver_call and caller_class_id is not None:
+    if language == "python" and is_direct_receiver_call and caller_class_id is not None:
         for class_id in (caller_class_id, *class_ancestors.get(caller_class_id, ())):
             receiver_matches = [
                 int(row["id"])
@@ -439,10 +442,39 @@ def _call_target_candidates(
             if receiver_matches:
                 return receiver_matches
 
+    if (
+        language == "python"
+        and caller_class_id is not None
+        and len(receiver_parts) == 3
+        and receiver_parts[0] in {"self", "cls"}
+    ):
+        attribute_name = receiver_parts[1]
+        target_class_ids: list[int] = []
+        for owner_id in (caller_class_id, *class_ancestors.get(caller_class_id, ())):
+            target_class_ids.extend(
+                python_receiver_classes.get((owner_id, attribute_name), ())
+            )
+        receiver_matches: list[int] = []
+        for target_class_id in dict.fromkeys(target_class_ids):
+            for class_id in (
+                target_class_id,
+                *class_ancestors.get(target_class_id, ()),
+            ):
+                receiver_matches.extend(
+                    int(row["id"])
+                    for row in symbols
+                    if row["parent_symbol_id"] == class_id
+                    and str(row["symbol_kind"]) == "method"
+                    and names_equal(row["name"], simple_name)
+                )
+        if receiver_matches:
+            return list(dict.fromkeys(receiver_matches))
+        return []
+
     class_scope = caller_parent
     if not class_scope and language in {"cpp", "rust"} and "::" in caller_qualified:
         class_scope = caller_qualified.rsplit("::", 1)[0]
-    if (is_receiver_call or language in {"cpp", "rust"}) and class_scope:
+    if (is_direct_receiver_call or language in {"cpp", "rust"}) and class_scope:
         separator = "::" if language in {"cpp", "rust"} else "."
         qualified = class_scope + separator + simple_name
         receiver_matches = [
@@ -613,6 +645,95 @@ def _python_class_ancestors(
     return ancestors
 
 
+def _python_receiver_classes(
+    db: sqlite3.Connection,
+    project_id: str,
+    symbols: list[sqlite3.Row],
+) -> dict[tuple[int, str], tuple[int, ...]]:
+    """Infer ``self.attribute`` class types from project-local constructor calls."""
+    class_rows = [row for row in symbols if str(row["symbol_kind"]) == "class"]
+    by_file_and_qualified = {
+        (int(row["file_id"]), str(row["qualified_name"])): int(row["id"])
+        for row in class_rows
+    }
+    by_leaf: dict[str, list[int]] = {}
+    for row in class_rows:
+        by_leaf.setdefault(str(row["name"]), []).append(int(row["id"]))
+    inferred: dict[tuple[int, str], list[int]] = {}
+
+    def constructor_leaf(value: ast.AST | None) -> str | None:
+        if not isinstance(value, ast.Call):
+            return None
+        current = value.func
+        while isinstance(current, ast.Attribute):
+            if isinstance(current.value, ast.Name):
+                return current.attr
+            current = current.value
+        return current.id if isinstance(current, ast.Name) else None
+
+    class Collector(ast.NodeVisitor):
+        def __init__(self, file_id: int) -> None:
+            self.file_id = file_id
+            self.class_stack: list[tuple[str, int | None]] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            prefix = ".".join(name for name, _symbol_id in self.class_stack)
+            qualified = f"{prefix}.{node.name}" if prefix else node.name
+            class_id = by_file_and_qualified.get((self.file_id, qualified))
+            self.class_stack.append((node.name, class_id))
+            for statement in node.body:
+                self.visit(statement)
+            self.class_stack.pop()
+
+        def _record(self, target: ast.AST, value: ast.AST | None) -> None:
+            if not self.class_stack or self.class_stack[-1][1] is None:
+                return
+            if not (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in {"self", "cls"}
+            ):
+                return
+            leaf = constructor_leaf(value)
+            if not leaf:
+                return
+            candidates = [
+                int(row["id"])
+                for row in class_rows
+                if int(row["file_id"]) == self.file_id and str(row["name"]) == leaf
+            ]
+            if not candidates and len(by_leaf.get(leaf, ())) == 1:
+                candidates = by_leaf[leaf]
+            if candidates:
+                inferred.setdefault(
+                    (int(self.class_stack[-1][1]), target.attr), []
+                ).extend(candidates)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            for target in node.targets:
+                self._record(target, node.value)
+            self.generic_visit(node.value)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            self._record(node.target, node.value)
+            if node.value is not None:
+                self.generic_visit(node.value)
+
+    for file_row in db.execute(
+        "SELECT id, content FROM project_files WHERE project_id = ? AND language = 'python'",
+        (project_id,),
+    ).fetchall():
+        try:
+            module = ast.parse(bytes(file_row["content"]).decode("utf-8"))
+        except (UnicodeDecodeError, SyntaxError, TypeError):
+            continue
+        Collector(int(file_row["id"])).visit(module)
+    return {
+        key: tuple(dict.fromkeys(values))
+        for key, values in inferred.items()
+    }
+
+
 def resolve_project_calls(db: sqlite3.Connection, project_id: str) -> CallResolutionCounts:
     symbols = db.execute(
         """
@@ -641,6 +762,7 @@ def resolve_project_calls(db: sqlite3.Connection, project_id: str) -> CallResolu
     ).fetchall()
     symbols_by_id = {int(row["id"]): row for row in symbols}
     class_ancestors = _python_class_ancestors(db, project_id, symbols)
+    python_receiver_classes = _python_receiver_classes(db, project_id, symbols)
 
     def enclosing_class_id(call: sqlite3.Row) -> int | None:
         symbol_id = call["caller_symbol_id"]
@@ -675,6 +797,7 @@ def resolve_project_calls(db: sqlite3.Connection, project_id: str) -> CallResolu
             dependency_targets,
             class_ancestors,
             enclosing_class_id(call),
+            python_receiver_classes,
         )
         if len(candidates) == 1:
             resolved_symbol_id = candidates[0]

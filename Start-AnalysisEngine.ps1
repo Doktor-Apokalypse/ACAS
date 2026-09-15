@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Start the analysis engine with .venv313, independently of PyCharm.
+Start the analysis engine with .venv, independently of PyCharm.
 .DESCRIPTION
 Copy this file to your desktop, then right-click it and choose Run with PowerShell.
 Keep the console open while using the WebUI. Ollama must already be running.
@@ -36,7 +36,7 @@ try {
         throw "Project directory not found: $ProjectDirectory. Edit the ProjectDirectory parameter in this script."
     }
     $launcherProject = (Resolve-Path -LiteralPath $ProjectDirectory).ProviderPath
-    $launcherVenv = Join-Path $launcherProject '.venv313'
+    $launcherVenv = Join-Path $launcherProject '.venv'
     $launcherScripts = Join-Path $launcherVenv 'Scripts'
     $launcherPython = Join-Path $launcherScripts 'python.exe'
     $launcherMain = Join-Path $launcherProject 'main.py'

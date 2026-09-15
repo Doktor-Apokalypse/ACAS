@@ -269,7 +269,7 @@ function renderProjectTree(data){
   }
   // Legacy or externally imported records may not have upload provenance.
   for(const file of data.files.filter(file=>file.upload_batch_id===null))appendTreeFile(uploads,project,file,null,file.path,functionsByFile);
-  if(!data.files.length){const empty=document.createElement('p');empty.textContent='This project is empty. Use + to add files, a folder or a ZIP.';root.append(empty)}
+  if(!data.files.length){const empty=document.createElement('p');empty.textContent='This project is empty. Use + to add files, a folder, a ZIP or a GitHub repository.';root.append(empty)}
   projectTree.replaceChildren(root);
 }
 function appendTreeFile(parent,project,file,batchId,label,functionsByFile){
@@ -303,9 +303,10 @@ async function renameAttachedProject(project){
   finally{projectUploading=false;syncComposerAvailability();syncProjectExplorer()}
 }
 async function editProjectTree(project,endpoint,method,payload){
-  if(projectUploading||activeWatcherForProject(project.id))return;
-  const chatId=currentChatId;let refresh=false;projectUploading=true;projectUploadTarget.disabled=true;syncComposerAvailability();
-  try{const response=await fetch('/api/projects/'+encodeURIComponent(project.id)+'/'+endpoint,{method,cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(redirectFor(response))return;const data=await readResponse(response);if(!response.ok)throw Error(errorText(data,response));if(currentChatId===chatId){currentProjects=currentProjects.map(item=>item.id===project.id?data.project:item);refresh=true;projectUploadStatus.className='project-upload-status';projectUploadStatus.textContent=endpoint==='entries'?'Deleted '+data.deleted_file_count+' file(s). Analysis has been reset.':'Entry point updated. Analysis has been reset.';if(projectReportState?.projectId===project.id)closeProjectReport()}}
+  if(projectUploading){projectUploadStatus.className='project-upload-status';projectUploadStatus.textContent='Wait for the current project change to finish.';return}
+  if(activeWatcherForProject(project.id)){projectUploadStatus.className='project-upload-status';projectUploadStatus.textContent='Stop the active analysis before changing '+project.name+'.';return}
+  const chatId=currentChatId;let refresh=false;projectUploading=true;
+  try{projectUploadTarget.disabled=true;syncComposerAvailability();const response=await fetch('/api/projects/'+encodeURIComponent(project.id)+'/'+endpoint,{method,cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(redirectFor(response))return;const data=await readResponse(response);if(!response.ok)throw Error(errorText(data,response));if(currentChatId===chatId){currentProjects=currentProjects.map(item=>item.id===project.id?data.project:item);refresh=true;projectUploadStatus.className='project-upload-status';projectUploadStatus.textContent=endpoint==='entries'?'Deleted '+data.deleted_file_count+' file(s). Analysis has been reset.':'Entry point updated. Analysis has been reset.';if(projectReportState?.projectId===project.id)closeProjectReport()}}
   catch(error){if(currentChatId===chatId){projectUploadStatus.className='project-upload-status error';projectUploadStatus.textContent=error.message}}
   finally{projectUploading=false;syncComposerAvailability();if(refresh){projectTreeSignature='';projectTreeStructureSignature='';renderProjectAttachments()}else syncProjectExplorer()}
 }

@@ -404,7 +404,15 @@ def inventory_file(
                 method = "content_signature"
 
     generated = file_is_generated(source.path, text)
-    eligible = bool(language in SUPPORTED_ANALYSIS_LANGUAGES and not generated)
+    # Extensionless files detected only from code-like content are often notes
+    # or prompt material. Keep the classification visible, but require a
+    # filename or shebang signal before sending them to an analyzer.
+    weak_extensionless_match = not extension and method == "content_signature"
+    eligible = bool(
+        language in SUPPORTED_ANALYSIS_LANGUAGES
+        and not generated
+        and not weak_extensionless_match
+    )
     return FileInventory(
         path=source.path,
         file_kind=file_kind,

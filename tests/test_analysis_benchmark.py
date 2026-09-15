@@ -14,6 +14,8 @@ from analysis_benchmark import (
     evaluate_findings,
     load_manifest,
     materialize_mutation_corpus,
+    materialize_seeded_error_corpus,
+    seeded_error_fixture,
 )
 
 
@@ -136,6 +138,31 @@ class AnalysisBenchmarkTests(unittest.TestCase):
 
             raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(raw_manifest["format_version"], 1)
+
+    def test_seeded_error_corpus_preserves_all_eight_known_faults(self) -> None:
+        fixture = seeded_error_fixture()
+        self.assertEqual(len(fixture.manifest.expectations), 8)
+        self.assertEqual(
+            {item.id for item in fixture.manifest.expectations},
+            {
+                "bad-response-quality-return",
+                "undefined-method-counts",
+                "undefined-input-estimate",
+                "unexpected-allow-empty",
+                "missing-project-id",
+                "bad-compact-excerpt-return",
+                "undefined-packed-values",
+                "rust-adapter-syntax",
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = materialize_seeded_error_corpus(directory)
+            manifest = load_manifest(manifest_path)
+            root = Path(directory)
+            self.assertEqual(manifest, fixture.manifest)
+            for relative_path in fixture.clean_sources:
+                self.assertTrue((root / "clean" / relative_path).is_file())
+                self.assertTrue((root / relative_path).is_file())
 
     def test_missing_or_ambiguous_anchor_cannot_match_any_line(self) -> None:
         manifest = BenchmarkManifest("anchors", (BenchmarkExpectation(
